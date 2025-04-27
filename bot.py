@@ -59,12 +59,19 @@ bot = FrostModBot()
 
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-def is_admin(interaction):
-    # Allow if user is admin or user ID matches OWNER_ID
-    return (
-        interaction.user.guild_permissions.administrator
-        or interaction.user.id == OWNER_ID
-    )
+import asyncio
+
+async def is_admin(interaction):
+    if interaction.user.guild_permissions.administrator or interaction.user.id == OWNER_ID:
+        return True
+    async with bot.db_pool.acquire() as conn:
+        row = await conn.fetchrow('''SELECT mod_role_id FROM servers WHERE guild_id = $1''', interaction.guild.id)
+    if row and row['mod_role_id']:
+        mod_role = interaction.guild.get_role(row['mod_role_id'])
+        if mod_role and mod_role in interaction.user.roles:
+            print(f"[is_admin DEBUG] User has mod role: {mod_role.name}")
+            return True
+    return False
 
 async def db_execute(query, *args):
     async with bot.db_pool.acquire() as conn:
@@ -76,11 +83,25 @@ async def db_fetch(query, *args):
 
 # --- Moderation Commands ---
 
+@bot.tree.command(name="mrole", description="Set the moderator role that can use admin commands.")
+@app_commands.describe(role="The role to grant moderator permissions.")
+async def mrole(interaction: discord.Interaction, role: discord.Role):
+    """Set the moderator role for this server."""
+    if not interaction.user.guild_permissions.administrator and interaction.user.id != OWNER_ID:
+        await interaction.response.send_message("You must be an administrator or the bot owner to set the mod role.", ephemeral=True)
+        return
+    try:
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute('''UPDATE servers SET mod_role_id = $1 WHERE guild_id = $2''', role.id, interaction.guild.id)
+        await interaction.response.send_message(f"Mod role set to {role.mention}. Members with this role can now use admin commands.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Failed to set mod role: {e}", ephemeral=True)
+
 @bot.tree.command(name="warn", description="Warn a user with a reason (admin only)")
 @app_commands.describe(user="The user to warn", reason="The reason for the warning")
 async def warn(interaction: discord.Interaction, user: discord.Member, reason: str):
     """Warn a user in the server and log the reason. Admin only."""
-    if not is_admin(interaction):
+    if not await is_admin(interaction):
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
     try:
@@ -110,7 +131,7 @@ async def warn(interaction: discord.Interaction, user: discord.Member, reason: s
 @app_commands.describe(user="The user to delete warnings for")
 async def delwarns(interaction: discord.Interaction, user: discord.Member):
     """Delete all warnings for a specific user in this server. Admin only."""
-    if not is_admin(interaction):
+    if not await is_admin(interaction):
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
     try:
@@ -126,7 +147,7 @@ async def delwarns(interaction: discord.Interaction, user: discord.Member):
 @app_commands.describe(user="The user to list warnings for")
 async def warns(interaction: discord.Interaction, user: discord.Member):
     """List all warnings for a specific user in this server. Admin only."""
-    if not is_admin(interaction):
+    if not await is_admin(interaction):
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
     try:
@@ -201,7 +222,7 @@ async def on_member_join(member):
 @app_commands.describe(channel="The channel to send welcome messages in.")
 async def welcome(interaction: discord.Interaction, channel: discord.TextChannel):
     """Set the channel for welcome messages. Admin only."""
-    if not interaction.user.guild_permissions.administrator:
+    if not await is_admin(interaction):
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
     try:
@@ -217,7 +238,7 @@ async def welcome(interaction: discord.Interaction, channel: discord.TextChannel
 @app_commands.describe(message="The welcome message to send. Use {user} for the new member, {membercount} for the member count.")
 async def wmessage(interaction: discord.Interaction, message: str):
     """Set the welcome message for new members. Admin only."""
-    if not interaction.user.guild_permissions.administrator:
+    if not await is_admin(interaction):
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
     try:
@@ -233,7 +254,7 @@ async def wmessage(interaction: discord.Interaction, message: str):
 @app_commands.describe(role="The role to assign to new members.")
 async def joinrole(interaction: discord.Interaction, role: discord.Role):
     """Set the role to assign to new members. Admin only."""
-    if not interaction.user.guild_permissions.administrator:
+    if not await is_admin(interaction):
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
     try:
@@ -249,7 +270,7 @@ async def joinrole(interaction: discord.Interaction, role: discord.Role):
 @app_commands.describe(channel="The channel to send logs in.")
 async def logschannel(interaction: discord.Interaction, channel: discord.TextChannel):
     # Only allow admins
-    if not interaction.user.guild_permissions.administrator:
+    if not await is_admin(interaction):
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
     try:
