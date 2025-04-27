@@ -5,23 +5,15 @@ from discord.ext import commands
 import asyncpg
 from dotenv import load_dotenv
 
-# Load environment variables at the top
+# Load environment variables
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+TEST_GUILD_ID = os.getenv("TEST_GUILD_ID")
 DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS")
 DB_NAME = os.getenv("DB_NAME")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
-
-# --------------------
-# Warn System Commands
-# --------------------
-
-# --- Helper Functions ---
-# (Moved below bot instantiation)
-
-# ... (keep import and config code above this)
 
 # Set up Discord intents before bot definition
 intents = discord.Intents.default()
@@ -34,8 +26,23 @@ class FrostModBot(commands.Bot):
         self.db_pool = None
 
     async def setup_hook(self):
-        # Register slash commands
+        # Register slash commands globally
         await self.tree.sync()
+        
+        # Also register slash commands to the test guild for immediate updates
+        if TEST_GUILD_ID:
+            test_guild = discord.Object(id=int(TEST_GUILD_ID))
+            self.tree.copy_global_to(guild=test_guild)
+            await self.tree.sync(guild=test_guild)
+            print(f"Commands synced to test guild ID: {TEST_GUILD_ID}")
+        
+        # Log registered commands for debugging
+        commands_registered = list(self.tree.get_commands())
+        print(f"\n--- Registered {len(commands_registered)} slash commands ---")
+        for cmd in commands_registered:
+            print(f"- /{cmd.name}: {cmd.description}")
+        print("-------------------------------------------\n")
+        
         # Connect to PostgreSQL
         self.db_pool = await asyncpg.create_pool(
             user=DB_USER,
@@ -61,7 +68,7 @@ async def db_fetch(query, *args):
     async with bot.db_pool.acquire() as conn:
         return await conn.fetch(query, *args)
 
-# --- Warn System Commands ---
+# --- Moderation Commands ---
 
 @bot.tree.command(name="warn", description="Warn a user with a reason (admin only)")
 @app_commands.describe(user="The user to warn", reason="The reason for the warning")
@@ -93,63 +100,52 @@ async def warn(interaction: discord.Interaction, user: discord.Member, reason: s
     except Exception as e:
         await interaction.response.send_message(f"[ERROR] Failed to warn user: {e}", ephemeral=True)
 
-@bot.tree.command(name="warns", description="List all warnings for this server (admin only)")
-async def warns(interaction: discord.Interaction):
-    """List all warnings for this server. Admin only."""
+@bot.tree.command(name="delwarns", description="Delete all warnings for a user in this server (admin only)")
+@app_commands.describe(user="The user to delete warnings for")
+async def delwarns(interaction: discord.Interaction, user: discord.Member):
+    """Delete all warnings for a specific user in this server. Admin only."""
+    if not is_admin(interaction):
+        await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
+        return
+    try:
+        result = await db_execute(
+            '''DELETE FROM warns WHERE guild_id = $1 AND user_id = $2''',
+            interaction.guild.id, user.id
+        )
+        await interaction.response.send_message(f"All warnings for {user.mention} have been deleted.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Failed to delete warnings: {e}", ephemeral=True)
+
+@bot.tree.command(name="warns", description="List all warnings for a user in this server (admin only)")
+@app_commands.describe(user="The user to list warnings for")
+async def warns(interaction: discord.Interaction, user: discord.Member):
+    """List all warnings for a specific user in this server. Admin only."""
     if not is_admin(interaction):
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
     try:
         rows = await db_fetch(
-            '''SELECT username, reason, warned_at, guild_name FROM warns WHERE guild_id = $1 ORDER BY warned_at DESC''',
-            interaction.guild.id
+            '''SELECT reason, warned_at FROM warns WHERE guild_id = $1 AND user_id = $2 ORDER BY warned_at DESC''',
+            interaction.guild.id, user.id
         )
-        if not rows:
-            await interaction.response.send_message("No warnings found for this server.", ephemeral=True)
+        warns_count = len(rows)
+        if warns_count == 0:
+            await interaction.response.send_message(f"{user.mention} has no warnings in this server.", ephemeral=True)
             return
-        guild_name = rows[0]['guild_name'] if rows else interaction.guild.name
-        embed = discord.Embed(title=f"Warnings for {guild_name}", color=discord.Color.orange())
+        embed = discord.Embed(
+            title=f"Warnings for {user.display_name}",
+            description=f"Total warnings: {warns_count}",
+            color=discord.Color.orange()
+        )
         for row in rows:
             embed.add_field(
-                name=row['username'],
-                value=f"Reason: {row['reason']}\nAt: {row['warned_at'].strftime('%Y-%m-%d %H:%M:%S')}",
+                name=row['warned_at'].strftime('%Y-%m-%d %H:%M:%S'),
+                value=f"Reason: {row['reason']}",
                 inline=False
             )
         await interaction.response.send_message(embed=embed, ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"[ERROR] Failed to fetch warnings: {e}", ephemeral=True)
-
-# Load environment variables
-load_dotenv()
-TOKEN = os.getenv("DISCORD_TOKEN")
-DB_USER = os.getenv("DB_USER")
-DB_PASS = os.getenv("DB_PASS")
-DB_NAME = os.getenv("DB_NAME")
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
-
-intents = discord.Intents.default()
-intents.members = True
-
-class FrostModBot(commands.Bot):
-    def __init__(self):
-        super().__init__(command_prefix="!", intents=intents, application_id=None)
-        self.db_pool = None
-
-    async def setup_hook(self):
-        # Register slash commands
-        await self.tree.sync()
-        # Connect to PostgreSQL
-        self.db_pool = await asyncpg.create_pool(
-            user=DB_USER,
-            password=DB_PASS,
-            database=DB_NAME,
-            host=DB_HOST,
-            port=DB_PORT
-        )
-        print("Connected to PostgreSQL!")
-
-bot = FrostModBot()
 
 @bot.event
 async def on_member_join(member):
@@ -275,62 +271,26 @@ async def help_command(interaction: discord.Interaction):
         description="Welcome to FrostMod! Here are the available commands.",
         color=discord.Color.blue()
     )
-    embed.add_field(
-        name="/avatar [user]",
-        value="Show a user's profile picture. If no user is specified, shows your own.",
-        inline=False
+    # Admin Commands
+    admin_cmds = (
+        "/warn <user> <reason> — Warn a user with a reason.\n"
+        "/warns <user> — List all warnings for a user.\n"
+        "/delwarns <user> — Delete all warnings for a user.\n"
+        "/purge <amount> — Delete a specified number of messages from the channel.\n"
+        "/purgeuser <user> <amount> — Delete messages from a specific user.\n"
+        "/welcome <channel> — Set the welcome channel.\n"
+        "/wmessage <message> — Set the welcome message.\n"
+        "/joinrole <role> — Set the join role for new members.\n"
+        "/logschannel <channel> — Set the logging channel.\n"
     )
-    embed.add_field(
-        name="/welcome <channel>",
-        value="Set the welcome channel for this server. Only admins can use this.",
-        inline=False
+    # Utility Commands
+    util_cmds = (
+        "/avatar [user] — Show a user's profile picture.\n"
+        "/support — Get bot support from the Frostline development team.\n"
+        "/help — Show this help message.\n"
     )
-    embed.add_field(
-        name="/wmessage <message>",
-        value=(
-            "Set the welcome message for this server (admin only). "
-            "You can use placeholders in your message:\n"
-            "- `{user}`: Mentions the new member\n"
-            "- `{membercount}`: Shows the server's member count\n\n"
-            "**Example:**\n"
-            "`Welcome {user}! You are member #{membercount} of our community!`"
-            "\n"
-        ),
-        inline=False
-    )
-    embed.add_field(
-        name="/joinrole <role>",
-        value="Set a role to automatically assign to new members (admin only).",
-        inline=False
-    )
-    embed.add_field(
-        name="/logschannel <channel>",
-        value=(
-            "Set the logging channel for server events (admin only). "
-            "The bot will log channel creations, deletions, member joins, leaves, and warnings to this channel."
-        ),
-        inline=False
-    )
-    embed.add_field(
-        name="/support",
-        value="Get bot support from the Frostline development team.",
-        inline=False
-    )
-    embed.add_field(
-        name="/warn <user> <reason>",
-        value="Warn a user with a reason (admin only). This will be logged in the server's logs channel if set.",
-        inline=False
-    )
-    embed.add_field(
-        name="/warns",
-        value="List all warnings for this server (admin only).",
-        inline=False
-    )
-    embed.add_field(
-        name="/help",
-        value="Show this help message.",
-        inline=False
-    )
+    embed.add_field(name="Admin Commands", value=admin_cmds, inline=False)
+    embed.add_field(name="Utility Commands", value=util_cmds, inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -344,6 +304,99 @@ async def support(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+
+@bot.tree.command(name="purge", description="Delete a specified number of messages from the channel (admin only)")
+@app_commands.describe(amount="The number of messages to delete (1-100)")
+async def purge(interaction: discord.Interaction, amount: int):
+    """Delete a specified number of messages from the channel. Admin only."""
+    if not is_admin(interaction):
+        await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
+        return
+        
+    # Validate the amount
+    if amount < 1 or amount > 100:
+        await interaction.response.send_message("You can only delete between 1 and 100 messages at a time.", ephemeral=True)
+        return
+        
+    # Defer the response since purging might take some time
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        # Delete messages
+        deleted = await interaction.channel.purge(limit=amount)
+        
+        # Send confirmation
+        await interaction.followup.send(f"Successfully deleted {len(deleted)} messages.", ephemeral=True)
+        
+        # Log to server's logs channel if set
+        async with bot.db_pool.acquire() as conn:
+            row = await conn.fetchrow('''SELECT logs_channel_id FROM servers WHERE guild_id = $1''', interaction.guild.id)
+        if row and row['logs_channel_id']:
+            log_channel = interaction.guild.get_channel(row['logs_channel_id'])
+            if log_channel:
+                embed = discord.Embed(
+                    title="Messages Purged",
+                    description=f"**Channel:** {interaction.channel.mention}\n**Amount:** {len(deleted)} messages\n**Moderator:** {interaction.user.mention}",
+                    color=discord.Color.red(),
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url if interaction.guild.icon else discord.Embed.Empty)
+                embed.set_thumbnail(url=interaction.user.display_avatar.url)
+                await log_channel.send(embed=embed)
+    except discord.Forbidden:
+        await interaction.followup.send("I don't have permission to delete messages in this channel.", ephemeral=True)
+    except discord.HTTPException as e:
+        await interaction.followup.send(f"An error occurred while purging messages: {e}", ephemeral=True)
+
+@bot.tree.command(name="purgeuser", description="Delete a specified number of messages from a specific user (admin only)")
+@app_commands.describe(
+    user="The user whose messages to delete",
+    amount="The number of messages to check (1-100)"
+)
+async def purgeuser(interaction: discord.Interaction, user: discord.Member, amount: int):
+    """Delete a specified number of messages from a specific user in the channel. Admin only."""
+    if not is_admin(interaction):
+        await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
+        return
+        
+    # Validate the amount
+    if amount < 1 or amount > 100:
+        await interaction.response.send_message("You can only check between 1 and 100 messages at a time.", ephemeral=True)
+        return
+        
+    # Defer the response since purging might take some time
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        # Define a check function to filter messages by the specified user
+        def check_user(message):
+            return message.author.id == user.id
+            
+        # Delete messages from the specified user
+        deleted = await interaction.channel.purge(limit=amount, check=check_user)
+        
+        # Send confirmation
+        await interaction.followup.send(f"Successfully deleted {len(deleted)} messages from {user.mention}.", ephemeral=True)
+        
+        # Log to server's logs channel if set
+        async with bot.db_pool.acquire() as conn:
+            row = await conn.fetchrow('''SELECT logs_channel_id FROM servers WHERE guild_id = $1''', interaction.guild.id)
+        if row and row['logs_channel_id']:
+            log_channel = interaction.guild.get_channel(row['logs_channel_id'])
+            if log_channel:
+                embed = discord.Embed(
+                    title="User Messages Purged",
+                    description=f"**Channel:** {interaction.channel.mention}\n**User:** {user.mention}\n**Amount:** {len(deleted)} messages\n**Moderator:** {interaction.user.mention}",
+                    color=discord.Color.red(),
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url if interaction.guild.icon else discord.Embed.Empty)
+                embed.set_thumbnail(url=user.display_avatar.url)
+                await log_channel.send(embed=embed)
+    except discord.Forbidden:
+        await interaction.followup.send("I don't have permission to delete messages in this channel.", ephemeral=True)
+    except discord.HTTPException as e:
+        await interaction.followup.send(f"An error occurred while purging messages: {e}", ephemeral=True)
 
 @bot.event
 async def on_member_remove(member):
@@ -425,6 +478,54 @@ async def on_guild_channel_delete(channel):
                 await log_channel.send(embed=embed)
     except Exception as e:
         print(f"Error logging channel deletion: {e}")
+
+@bot.event
+async def on_user_update(before, after):
+    # Check if username or avatar changed
+    username_changed = before.name != after.name
+    avatar_changed = before.avatar != after.avatar
+    
+    # Only proceed if something changed
+    if not (username_changed or avatar_changed):
+        return
+    
+    # Log changes to all servers this user is in
+    for guild in bot.guilds:
+        # Check if user is in this guild
+        member = guild.get_member(after.id)
+        if not member:
+            continue
+            
+        try:
+            # Check if this guild has a logs channel set
+            async with bot.db_pool.acquire() as conn:
+                row = await conn.fetchrow('''SELECT logs_channel_id FROM servers WHERE guild_id = $1''', guild.id)
+            
+            if row and row['logs_channel_id']:
+                log_channel = guild.get_channel(row['logs_channel_id'])
+                if log_channel:
+                    # Create embed for the change
+                    embed = discord.Embed(
+                        title="User Updated",
+                        color=discord.Color.blue(),
+                        timestamp=discord.utils.utcnow()
+                    )
+                    embed.set_author(name=f"{after}", icon_url=after.display_avatar.url)
+                    
+                    # Add fields based on what changed
+                    if username_changed:
+                        embed.add_field(name="Username Changed", value=f"**Before:** {before.name}\n**After:** {after.name}", inline=False)
+                    
+                    if avatar_changed:
+                        embed.add_field(name="Avatar Changed", value="User updated their profile picture", inline=False)
+                        if before.avatar:
+                            embed.set_thumbnail(url=before.avatar.url)
+                        embed.set_image(url=after.display_avatar.url)
+                    
+                    # Send the embed to the logs channel
+                    await log_channel.send(embed=embed)
+        except Exception as e:
+            print(f"Error logging user update: {e}")
 
 if __name__ == "__main__":
     bot.run(TOKEN)

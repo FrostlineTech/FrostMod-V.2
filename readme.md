@@ -5,7 +5,8 @@ FrostMod V2 is a Discord bot designed for server moderation, user onboarding, an
 ## Features
 - **Welcome System**: Greet new members with a customizable welcome message (supports `{user}` and `{membercount}` placeholders) in a channel of your choice.
 - **Automatic Join Role**: Assign a specific role to new members automatically.
-- **Logging System**: Log important server events (channel creation, deletion, member joins/leaves) to a designated channel with detailed, attractive embeds.
+- **Moderation Tools**: Warn users, purge messages, and keep track of user infractions.
+- **Logging System**: Log important server events (channel creation/deletion, member joins/leaves, username/avatar changes) to a designated channel with detailed, attractive embeds.
 - **Slash Commands**: Modern, easy-to-use Discord slash commands for all features.
 
 ## Commands
@@ -28,8 +29,17 @@ FrostMod V2 is a Discord bot designed for server moderation, user onboarding, an
 - **/warn <user> <reason>**
   - Warn a user with a reason (admin only). This will be logged in the server's logs channel if set.
 
-- **/warns**
-  - List all warnings for this server (admin only).
+- **/warns <user>**
+  - List all warnings for a specific user (admin only).
+
+- **/delwarns <user>**
+  - Delete all warnings for a specific user (admin only).
+
+- **/purge <amount>**
+  - Delete a specified number of messages (1-100) from the current channel (admin only).
+
+- **/purgeuser <user> <amount>**
+  - Delete a specified number of messages (1-100) from a specific user in the current channel (admin only).
 
 - **/support**
   - Get bot support from the Frostline development team.
