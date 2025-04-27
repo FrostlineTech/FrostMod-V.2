@@ -57,8 +57,14 @@ bot = FrostModBot()
 
 # --- Helper Functions ---
 
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+
 def is_admin(interaction):
-    return interaction.user.guild_permissions.administrator
+    # Allow if user is admin or user ID matches OWNER_ID
+    return (
+        interaction.user.guild_permissions.administrator
+        or interaction.user.id == OWNER_ID
+    )
 
 async def db_execute(query, *args):
     async with bot.db_pool.acquire() as conn:
