@@ -25,6 +25,15 @@ FrostMod V2 is a Discord bot designed for server moderation, user onboarding, an
 - **/logschannel <channel>**
   - Set the channel where server events (channel creation, deletion, member joins/leaves) are logged (admin only).
 
+- **/warn <user> <reason>**
+  - Warn a user with a reason (admin only). This will be logged in the server's logs channel if set.
+
+- **/warns**
+  - List all warnings for this server (admin only).
+
+- **/support**
+  - Get bot support from the Frostline development team.
+
 - **/help**
   - Lists all available commands and usage information.
 
