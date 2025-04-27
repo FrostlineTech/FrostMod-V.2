@@ -5,6 +5,120 @@ from discord.ext import commands
 import asyncpg
 from dotenv import load_dotenv
 
+# Load environment variables at the top
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
+DB_USER = os.getenv("DB_USER")
+DB_PASS = os.getenv("DB_PASS")
+DB_NAME = os.getenv("DB_NAME")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+
+# --------------------
+# Warn System Commands
+# --------------------
+
+# --- Helper Functions ---
+# (Moved below bot instantiation)
+
+# ... (keep import and config code above this)
+
+# Set up Discord intents before bot definition
+intents = discord.Intents.default()
+intents.members = True
+
+# FrostModBot definition
+class FrostModBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix="!", intents=intents, application_id=None)
+        self.db_pool = None
+
+    async def setup_hook(self):
+        # Register slash commands
+        await self.tree.sync()
+        # Connect to PostgreSQL
+        self.db_pool = await asyncpg.create_pool(
+            user=DB_USER,
+            password=DB_PASS,
+            database=DB_NAME,
+            host=DB_HOST,
+            port=DB_PORT
+        )
+        print("Connected to PostgreSQL!")
+
+bot = FrostModBot()
+
+# --- Helper Functions ---
+
+def is_admin(interaction):
+    return interaction.user.guild_permissions.administrator
+
+async def db_execute(query, *args):
+    async with bot.db_pool.acquire() as conn:
+        return await conn.execute(query, *args)
+
+async def db_fetch(query, *args):
+    async with bot.db_pool.acquire() as conn:
+        return await conn.fetch(query, *args)
+
+# --- Warn System Commands ---
+
+@bot.tree.command(name="warn", description="Warn a user with a reason (admin only)")
+@app_commands.describe(user="The user to warn", reason="The reason for the warning")
+async def warn(interaction: discord.Interaction, user: discord.Member, reason: str):
+    """Warn a user in the server and log the reason. Admin only."""
+    if not is_admin(interaction):
+        await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
+        return
+    try:
+        await db_execute(
+            '''INSERT INTO warns (guild_id, guild_name, user_id, username, reason) VALUES ($1, $2, $3, $4, $5)''',
+            interaction.guild.id, interaction.guild.name, user.id, user.display_name, reason
+        )
+        await interaction.response.send_message(f"Warned {user.mention} for: {reason}", ephemeral=False)
+        # Log to server's logs channel if set
+        async with bot.db_pool.acquire() as conn:
+            row = await conn.fetchrow('''SELECT logs_channel_id FROM servers WHERE guild_id = $1''', interaction.guild.id)
+        if row and row['logs_channel_id']:
+            log_channel = interaction.guild.get_channel(row['logs_channel_id'])
+            if log_channel:
+                embed = discord.Embed(
+                    title="User Warned",
+                    description=f"**User:** {user.mention}\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}",
+                    color=discord.Color.orange()
+                )
+                embed.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url if interaction.guild.icon else discord.Embed.Empty)
+                embed.set_thumbnail(url=user.display_avatar.url)
+                await log_channel.send(embed=embed)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Failed to warn user: {e}", ephemeral=True)
+
+@bot.tree.command(name="warns", description="List all warnings for this server (admin only)")
+async def warns(interaction: discord.Interaction):
+    """List all warnings for this server. Admin only."""
+    if not is_admin(interaction):
+        await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
+        return
+    try:
+        rows = await db_fetch(
+            '''SELECT username, reason, warned_at, guild_name FROM warns WHERE guild_id = $1 ORDER BY warned_at DESC''',
+            interaction.guild.id
+        )
+        if not rows:
+            await interaction.response.send_message("No warnings found for this server.", ephemeral=True)
+            return
+        guild_name = rows[0]['guild_name'] if rows else interaction.guild.name
+        embed = discord.Embed(title=f"Warnings for {guild_name}", color=discord.Color.orange())
+        for row in rows:
+            embed.add_field(
+                name=row['username'],
+                value=f"Reason: {row['reason']}\nAt: {row['warned_at'].strftime('%Y-%m-%d %H:%M:%S')}",
+                inline=False
+            )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Failed to fetch warnings: {e}", ephemeral=True)
+
 # Load environment variables
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -77,44 +191,57 @@ async def on_member_join(member):
     except Exception as e:
         print(f"Error logging join for {member} in guild {member.guild.name}: {e}")
 
+# ------------------------------
+# Server Configuration Commands
+# ------------------------------
+
 @bot.tree.command(name="welcome", description="Set the welcome channel for this server.")
 @app_commands.describe(channel="The channel to send welcome messages in.")
 async def welcome(interaction: discord.Interaction, channel: discord.TextChannel):
-    # Only allow admins
+    """Set the channel for welcome messages. Admin only."""
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
-    async with bot.db_pool.acquire() as conn:
-        await conn.execute('''
-            UPDATE servers SET welcome_channel_id = $1 WHERE guild_id = $2
-        ''', channel.id, interaction.guild.id)
-    await interaction.response.send_message(f"Welcome channel set to {channel.mention}.", ephemeral=True)
+    try:
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE servers SET welcome_channel_id = $1 WHERE guild_id = $2
+            ''', channel.id, interaction.guild.id)
+        await interaction.response.send_message(f"Welcome channel set to {channel.mention}.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Failed to set welcome channel: {e}", ephemeral=True)
 
 @bot.tree.command(name="wmessage", description="Set the welcome message for this server.")
 @app_commands.describe(message="The welcome message to send. Use {user} for the new member, {membercount} for the member count.")
 async def wmessage(interaction: discord.Interaction, message: str):
-    # Only allow admins
+    """Set the welcome message for new members. Admin only."""
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
-    async with bot.db_pool.acquire() as conn:
-        await conn.execute('''
-            UPDATE servers SET welcome_message = $1 WHERE guild_id = $2
-        ''', message, interaction.guild.id)
-    await interaction.response.send_message("Welcome message updated!", ephemeral=True)
+    try:
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE servers SET welcome_message = $1 WHERE guild_id = $2
+            ''', message, interaction.guild.id)
+        await interaction.response.send_message("Welcome message updated!", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Failed to update welcome message: {e}", ephemeral=True)
 
 @bot.tree.command(name="joinrole", description="Set a role to assign to new members on join.")
 @app_commands.describe(role="The role to assign to new members.")
 async def joinrole(interaction: discord.Interaction, role: discord.Role):
-    # Only allow admins
+    """Set the role to assign to new members. Admin only."""
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
-    async with bot.db_pool.acquire() as conn:
-        await conn.execute('''
-            UPDATE servers SET join_role_id = $1 WHERE guild_id = $2
-        ''', role.id, interaction.guild.id)
-    await interaction.response.send_message(f"Join role set to {role.mention}.", ephemeral=True)
+    try:
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE servers SET join_role_id = $1 WHERE guild_id = $2
+            ''', role.id, interaction.guild.id)
+        await interaction.response.send_message(f"Join role set to {role.mention}.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Failed to set join role: {e}", ephemeral=True)
 
 @bot.tree.command(name="logschannel", description="Set the logging channel for this server.")
 @app_commands.describe(channel="The channel to send logs in.")
@@ -123,11 +250,15 @@ async def logschannel(interaction: discord.Interaction, channel: discord.TextCha
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
-    async with bot.db_pool.acquire() as conn:
-        await conn.execute('''
-            UPDATE servers SET logs_channel_id = $1 WHERE guild_id = $2
-        ''', channel.id, interaction.guild.id)
-    await interaction.response.send_message(f"Logging channel set to {channel.mention}.", ephemeral=True)
+    try:
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE servers SET logs_channel_id = $1 WHERE guild_id = $2
+            ''', channel.id, interaction.guild.id)
+        await interaction.response.send_message(f"Logging channel set to {channel.mention}.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Failed to set logging channel: {e}", ephemeral=True)
+
 
 @bot.tree.command(name="avatar", description="Show a user's profile picture.")
 @app_commands.describe(user="The user to get the avatar of (optional)")
@@ -176,8 +307,23 @@ async def help_command(interaction: discord.Interaction):
         name="/logschannel <channel>",
         value=(
             "Set the logging channel for server events (admin only). "
-            "The bot will log channel creations, deletions, member joins, and leaves to this channel."
+            "The bot will log channel creations, deletions, member joins, leaves, and warnings to this channel."
         ),
+        inline=False
+    )
+    embed.add_field(
+        name="/support",
+        value="Get bot support from the Frostline development team.",
+        inline=False
+    )
+    embed.add_field(
+        name="/warn <user> <reason>",
+        value="Warn a user with a reason (admin only). This will be logged in the server's logs channel if set.",
+        inline=False
+    )
+    embed.add_field(
+        name="/warns",
+        value="List all warnings for this server (admin only).",
         inline=False
     )
     embed.add_field(
@@ -186,6 +332,18 @@ async def help_command(interaction: discord.Interaction):
         inline=False
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="support", description="Get support for the bot.")
+async def support(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="FrostMod Support",
+        description="Get bot support from The bot's development team at the official Frostline Discord: https://discord.gg/BjbUXwFF6n",
+        color=discord.Color.blue()
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 
 @bot.event
 async def on_member_remove(member):
