@@ -72,6 +72,61 @@ status_cycle = cycle(status_messages)
 async def on_ready():
     print("Bot is ready. Starting status rotation.")
     bot.loop.create_task(rotate_status())
+    bot.loop.create_task(daily_birthday_check())
+
+async def daily_birthday_check():
+    import datetime, asyncio
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        now = datetime.datetime.now(datetime.timezone.utc)
+        # Calculate seconds until next midnight UTC
+        tomorrow = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        seconds_until_midnight = (tomorrow - now).total_seconds()
+        await asyncio.sleep(seconds_until_midnight)
+        # Now it's midnight UTC: check for birthdays
+        today = datetime.date.today()
+        month = today.month
+        day = today.day
+        try:
+            async with bot.db_pool.acquire() as conn:
+                # Find all birthdays for today
+                rows = await conn.fetch('''
+                    SELECT * FROM birthdays WHERE EXTRACT(MONTH FROM birthday) = $1 AND EXTRACT(DAY FROM birthday) = $2
+                ''', month, day)
+                # Group by guild
+                from collections import defaultdict
+                guild_birthdays = defaultdict(list)
+                for row in rows:
+                    guild_birthdays[row['guild_id']].append(row)
+                for guild_id, bdays in guild_birthdays.items():
+                    guild = bot.get_guild(guild_id)
+                    if not guild:
+                        continue
+                    server_row = await conn.fetchrow('''SELECT birthday_channel_id FROM servers WHERE guild_id = $1''', guild_id)
+                    if not server_row or not server_row['birthday_channel_id']:
+                        continue
+                    channel = guild.get_channel(server_row['birthday_channel_id'])
+                    if not channel:
+                        continue
+                    # Collect mentions/usernames
+                    mentions = []
+                    for row in bdays:
+                        member = guild.get_member(row['user_id'])
+                        mentions.append(member.mention if member else row['username'])
+                    mention_str = ' '.join(mentions)
+                    msg = f"Happy Birthday {mention_str}!\nFrostline wishes you the best birthday wishes!"
+                    embed = discord.Embed(
+                        title="🎉 Happy Birthday! 🎉",
+                        description=msg,
+                        color=discord.Color.magenta()
+                    )
+                    embed.set_footer(text="FrostMod Birthday System")
+                    try:
+                        await channel.send(embed=embed)
+                    except Exception as e:
+                        print(f"[Birthday Announce ERROR] {e}")
+        except Exception as e:
+            print(f"[Birthday Check ERROR] {e}")
 
 async def rotate_status():
     await bot.wait_until_ready()
@@ -112,6 +167,73 @@ async def db_fetch(query, *args):
 # --- Birthday Commands ---
 from discord.app_commands import describe
 
+@bot.tree.command(name="testbirthdays", description="Test birthday announcements for today (admin only)")
+async def testbirthdays(interaction: discord.Interaction):
+    """Admin-only: Immediately run birthday announcement logic for this guild for today."""
+    if not await is_admin(interaction):
+        await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
+        return
+    import datetime
+    today = datetime.date.today()
+    month = today.month
+    day = today.day
+    try:
+        async with bot.db_pool.acquire() as conn:
+            rows = await conn.fetch('''
+                SELECT * FROM birthdays WHERE guild_id = $1 AND EXTRACT(MONTH FROM birthday) = $2 AND EXTRACT(DAY FROM birthday) = $3
+            ''', interaction.guild.id, month, day)
+            if not rows:
+                await interaction.response.send_message("No birthdays found for today in this server.", ephemeral=True)
+                return
+            server_row = await conn.fetchrow('''SELECT birthday_channel_id FROM servers WHERE guild_id = $1''', interaction.guild.id)
+            if not server_row or not server_row['birthday_channel_id']:
+                await interaction.response.send_message("Birthday channel is not set for this server.", ephemeral=True)
+                return
+            channel = interaction.guild.get_channel(server_row['birthday_channel_id'])
+            if not channel:
+                await interaction.response.send_message("Birthday channel not found in this server.", ephemeral=True)
+                return
+            mentions = []
+            for row in rows:
+                member = interaction.guild.get_member(row['user_id'])
+                mentions.append(member.mention if member else row['username'])
+            mention_str = ' '.join(mentions)
+            msg = f"Happy Birthday {mention_str}!\nFrostline wishes you the best birthday wishes!"
+            embed = discord.Embed(
+                title="🎉 Happy Birthday! 🎉",
+                description=msg,
+                color=discord.Color.magenta()
+            )
+            embed.set_footer(text="FrostMod Birthday System")
+            await channel.send(embed=embed)
+            await interaction.response.send_message("Birthday announcement sent!", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] {e}", ephemeral=True)
+
+@bot.tree.command(name="delbday", description="Delete a user's birthday (admins can delete any, users can delete their own)")
+@describe(user="The user whose birthday to delete")
+async def delbday(interaction: discord.Interaction, user: discord.Member):
+    """Delete a user's birthday. Users can delete their own, admins (or mod role) can delete any."""
+    # Check if the user is deleting their own birthday or is admin
+    is_self = user.id == interaction.user.id
+    is_admin_user = await is_admin(interaction)
+    if not (is_self or is_admin_user):
+        await interaction.response.send_message("You can only delete your own birthday.", ephemeral=True)
+        return
+    try:
+        async with bot.db_pool.acquire() as conn:
+            result = await conn.execute(
+                '''DELETE FROM birthdays WHERE guild_id = $1 AND user_id = $2''',
+                interaction.guild.id, user.id
+            )
+        if result and result.startswith("DELETE"):
+            print(f"[BIRTHDAY DELETED] {user} ({user.id}) in guild {interaction.guild.name} ({interaction.guild.id})")
+            await interaction.response.send_message(f"Birthday for {user.display_name} deleted.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"No birthday found for {user.display_name}.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Could not delete birthday: {e}", ephemeral=True)
+
 @bot.tree.command(name="setbirthday", description="Set your birthday (mm/dd/yyyy)")
 @describe(date="Your birthday in mm/dd/yyyy format")
 async def setbirthday(interaction: discord.Interaction, date: str):
@@ -139,6 +261,7 @@ async def setbirthday(interaction: discord.Interaction, date: str):
                 interaction.user.name,
                 birthday
             )
+        print(f"[BIRTHDAY ADDED/UPDATED] {interaction.user} ({interaction.user.id}) in guild {interaction.guild.name} ({interaction.guild.id}): {birthday}")
         await interaction.response.send_message(f"Your birthday has been set to {birthday.strftime('%B %d, %Y')}!", ephemeral=True)
     except ValueError:
         await interaction.response.send_message("Invalid date format! Please use mm/dd/yyyy.", ephemeral=True)
@@ -157,6 +280,7 @@ async def bdaychannel(interaction: discord.Interaction, channel: discord.TextCha
             await conn.execute('''
                 UPDATE servers SET birthday_channel_id = $1 WHERE guild_id = $2
             ''', channel.id, interaction.guild.id)
+        print(f"[DB UPDATE] servers: Set birthday_channel_id={channel.id} for guild {interaction.guild.name} ({interaction.guild.id})")
         await interaction.response.send_message(f"Birthday announcements will be sent in {channel.mention}.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"[ERROR] Could not set birthday channel: {e}", ephemeral=True)
@@ -190,6 +314,7 @@ async def mrole(interaction: discord.Interaction, role: discord.Role):
     try:
         async with bot.db_pool.acquire() as conn:
             await conn.execute('''UPDATE servers SET mod_role_id = $1 WHERE guild_id = $2''', role.id, interaction.guild.id)
+        print(f"[DB UPDATE] servers: Set mod_role_id={role.id} for guild {interaction.guild.name} ({interaction.guild.id})")
         await interaction.response.send_message(f"Mod role set to {role.mention}. Members with this role can now use admin commands.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"[ERROR] Failed to set mod role: {e}", ephemeral=True)
@@ -206,6 +331,7 @@ async def warn(interaction: discord.Interaction, user: discord.Member, reason: s
             '''INSERT INTO warns (guild_id, guild_name, user_id, username, reason) VALUES ($1, $2, $3, $4, $5)''',
             interaction.guild.id, interaction.guild.name, user.id, user.display_name, reason
         )
+        print(f"[DB INSERT] warns: {user} ({user.id}) warned by {interaction.user} ({interaction.user.id}) in guild {interaction.guild.name} ({interaction.guild.id}) for reason: {reason}")
         await interaction.response.send_message(f"Warned {user.mention} for: {reason}", ephemeral=False)
         # Log to server's logs channel if set
         async with bot.db_pool.acquire() as conn:
@@ -236,6 +362,7 @@ async def delwarns(interaction: discord.Interaction, user: discord.Member):
             '''DELETE FROM warns WHERE guild_id = $1 AND user_id = $2''',
             interaction.guild.id, user.id
         )
+        print(f"[DB DELETE] warns: All warnings for {user} ({user.id}) in guild {interaction.guild.name} ({interaction.guild.id})")
         await interaction.response.send_message(f"All warnings for {user.mention} have been deleted.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"[ERROR] Failed to delete warnings: {e}", ephemeral=True)
@@ -281,14 +408,17 @@ async def on_member_join(member):
                 INSERT INTO servers (guild_id, guild_name) VALUES ($1, $2)
                 ON CONFLICT (guild_id) DO UPDATE SET guild_name = EXCLUDED.guild_name
             ''', member.guild.id, member.guild.name)
-            # Now log the join
-            await conn.execute('''
-                INSERT INTO user_joins (guild_id, user_id, username) VALUES ($1, $2, $3)
-            ''', member.guild.id, member.id, str(member))
-            # Fetch welcome channel, message, and join role
-            row = await conn.fetchrow('''
-                SELECT welcome_channel_id, welcome_message, join_role_id FROM servers WHERE guild_id = $1
-            ''', member.guild.id)
+        print(f"[DB UPSERT] servers: {member.guild.name} ({member.guild.id})")
+        # Now log the join
+        await conn.execute('''
+            INSERT INTO user_joins (guild_id, user_id, username) VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id, user_id) DO NOTHING
+        ''', member.guild.id, member.id, str(member))
+        print(f"[DB INSERT] user_joins: {member} ({member.id}) in guild {member.guild.name} ({member.guild.id})")
+        # Fetch welcome channel, message, and join role
+        row = await conn.fetchrow('''
+            SELECT welcome_channel_id, welcome_message, join_role_id FROM servers WHERE guild_id = $1
+        ''', member.guild.id)
         # Assign join role if set
         if row and row['join_role_id']:
             role = member.guild.get_role(row['join_role_id'])
@@ -327,6 +457,7 @@ async def welcome(interaction: discord.Interaction, channel: discord.TextChannel
             await conn.execute('''
                 UPDATE servers SET welcome_channel_id = $1 WHERE guild_id = $2
             ''', channel.id, interaction.guild.id)
+        print(f"[DB UPDATE] servers: Set welcome_channel_id={channel.id} for guild {interaction.guild.name} ({interaction.guild.id})")
         await interaction.response.send_message(f"Welcome channel set to {channel.mention}.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"[ERROR] Failed to set welcome channel: {e}", ephemeral=True)
@@ -343,6 +474,7 @@ async def wmessage(interaction: discord.Interaction, message: str):
             await conn.execute('''
                 UPDATE servers SET welcome_message = $1 WHERE guild_id = $2
             ''', message, interaction.guild.id)
+        print(f"[DB UPDATE] servers: Set welcome_message for guild {interaction.guild.name} ({interaction.guild.id})")
         await interaction.response.send_message("Welcome message updated!", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"[ERROR] Failed to update welcome message: {e}", ephemeral=True)
@@ -359,6 +491,7 @@ async def joinrole(interaction: discord.Interaction, role: discord.Role):
             await conn.execute('''
                 UPDATE servers SET join_role_id = $1 WHERE guild_id = $2
             ''', role.id, interaction.guild.id)
+        print(f"[DB UPDATE] servers: Set join_role_id={role.id} for guild {interaction.guild.name} ({interaction.guild.id})")
         await interaction.response.send_message(f"Join role set to {role.mention}.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"[ERROR] Failed to set join role: {e}", ephemeral=True)
@@ -375,6 +508,7 @@ async def logschannel(interaction: discord.Interaction, channel: discord.TextCha
             await conn.execute('''
                 UPDATE servers SET logs_channel_id = $1 WHERE guild_id = $2
             ''', channel.id, interaction.guild.id)
+        print(f"[DB UPDATE] servers: Set logs_channel_id={channel.id} for guild {interaction.guild.name} ({interaction.guild.id})")
         await interaction.response.send_message(f"Logging channel set to {channel.mention}.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"[ERROR] Failed to set logging channel: {e}", ephemeral=True)
@@ -388,6 +522,8 @@ async def avatar(interaction: discord.Interaction, user: discord.User = None):
     embed.set_image(url=user.display_avatar.url)
     await interaction.response.send_message(embed=embed)
 
+
+
 @bot.tree.command(name="help", description="Show help for FrostMod commands.")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -395,27 +531,33 @@ async def help_command(interaction: discord.Interaction):
         description="Welcome to FrostMod! Here are the available commands.",
         color=discord.Color.blue()
     )
-    # Admin Commands
+    # Admin/Mod Commands
     admin_cmds = (
-        "/warn <user> <reason> — Warn a user with a reason.\n"
-        "/warns <user> — List all warnings for a user.\n"
-        "/delwarns <user> — Delete all warnings for a user.\n"
-        "/purge <amount> — Delete a specified number of messages from the channel.\n"
-        "/purgeuser <user> <amount> — Delete messages from a specific user.\n"
-        "/welcome <channel> — Set the welcome channel.\n"
-        "/wmessage <message> — Set the welcome message.\n"
-        "/joinrole <role> — Set the join role for new members.\n"
-        "/logschannel <channel> — Set the logging channel.\n"
-        "/bdaychannel <channel> — Set the channel for birthday announcements.\n"
+        "/warn <user> <reason> — Warn a user with a reason. (Admin)\n"
+        "/warns <user> — List all warnings for a user. (Admin)\n"
+        "/delwarns <user> — Delete all warnings for a user. (Admin)\n"
+        "/purge <amount> — Delete a specified number of messages from the channel. (Admin)\n"
+        "/purgeuser <user> <amount> — Delete messages from a specific user. (Admin)\n"
+        "/welcome <channel> — Set the welcome channel. (Admin)\n"
+        "/wmessage <message> — Set the welcome message. (Admin)\n"
+        "/joinrole <role> — Set the join role for new members. (Admin)\n"
+        "/logschannel <channel> — Set the logging channel. (Admin)\n"
+        "/bdaychannel <channel> — Set the channel for birthday announcements. (Admin)\n"
+    )
+    # Birthday Commands
+    birthday_cmds = (
+        "/setbirthday mm/dd/yyyy — Set your birthday for birthday announcements. (Everyone)\n"
+        "/testbirthdays — Test birthday announcements. (Admin)\n"
+        "/delbday <user> — Delete a user's birthday. (Admin)\n"
     )
     # Utility Commands
     util_cmds = (
         "/avatar [user] — Show a user's profile picture.\n"
         "/support — Get bot support from the Frostline development team.\n"
         "/help — Show this help message.\n"
-        "/setbirthday mm/dd/yyyy — Set your birthday for birthday announcements.\n"
     )
-    embed.add_field(name="Admin Commands", value=admin_cmds, inline=False)
+    embed.add_field(name="Admin/Mod Commands", value=admin_cmds, inline=False)
+    embed.add_field(name="Birthday Commands", value=birthday_cmds, inline=False)
     embed.add_field(name="Utility Commands", value=util_cmds, inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
