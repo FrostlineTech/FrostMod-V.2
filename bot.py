@@ -522,44 +522,48 @@ async def avatar(interaction: discord.Interaction, user: discord.User = None):
     embed.set_image(url=user.display_avatar.url)
     await interaction.response.send_message(embed=embed)
 
-
-
-@bot.tree.command(name="help", description="Show help for FrostMod commands.")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="FrostMod Help",
-        description="Welcome to FrostMod! Here are the available commands.",
+        title="❄️ FrostMod Help Center",
+        description="""
+Welcome to **FrostMod**! Below you'll find all available commands, grouped by category. 
+
+**Tip:** Use `/command` in chat. Parameters in `<angle brackets>` are required, `[square brackets]` are optional.
+        """,
         color=discord.Color.blue()
     )
-    # Admin/Mod Commands
+
     admin_cmds = (
-        "/warn <user> <reason> — Warn a user with a reason. (Admin)\n"
-        "/warns <user> — List all warnings for a user. (Admin)\n"
-        "/delwarns <user> — Delete all warnings for a user. (Admin)\n"
-        "/purge <amount> — Delete a specified number of messages from the channel. (Admin)\n"
-        "/purgeuser <user> <amount> — Delete messages from a specific user. (Admin)\n"
-        "/welcome <channel> — Set the welcome channel. (Admin)\n"
-        "/wmessage <message> — Set the welcome message. (Admin)\n"
-        "/joinrole <role> — Set the join role for new members. (Admin)\n"
-        "/logschannel <channel> — Set the logging channel. (Admin)\n"
-        "/bdaychannel <channel> — Set the channel for birthday announcements. (Admin)\n"
+        "**/warn `<user>` `<reason>`**\nWarn a user and log the reason. Only admins/mods can use this. Example: `/warn @User Spamming`.\n\n"
+        "**/warns `<user>`**\nList all warnings for a user in this server.\n\n"
+        "**/delwarns `<user>`**\nDelete all warnings for a user.\n\n"
+        "**/purge `<amount>`**\nDelete a number of recent messages (1-100) from the current channel. Example: `/purge 20`.\n\n"
+        "**/purgeuser `<user>` `<amount>`**\nDelete up to 100 messages from a specific user in the current channel. Example: `/purgeuser @User 10`.\n\n"
+        "**/welcome `<channel>`**\nSet the channel for welcome messages.\n\n"
+        "**/wmessage `<message>`**\nSet the welcome message. Use `{user}` for the new member, `{membercount}` for the server count.\n\n"
+        "**/joinrole `<role>`**\nAssign a role to new members when they join.\n\n"
+        "**/logschannel `<channel>`**\nSet the channel for moderation logs.\n\n"
+        "**/bdaychannel `<channel>`**\nSet the channel for birthday announcements.\n"
     )
-    # Birthday Commands
+
     birthday_cmds = (
-        "/setbirthday mm/dd/yyyy — Set your birthday for birthday announcements. (Everyone)\n"
-        "/testbirthdays — Test birthday announcements. (Admin)\n"
-        "/delbday <user> — Delete a user's birthday. (Admin)\n"
+        "**/setbirthday `<mm/dd/yyyy>`**\nSet your birthday for server birthday announcements. Example: `/setbirthday 04/27/2000`.\n\n"
+        "**/testbirthdays**\n(Admin only) Run a test of birthday announcements for today.\n\n"
+        "**/delbday `<user>`**\nDelete a user's birthday. Users can delete their own; admins/mods can delete anyone's.\n"
     )
-    # Utility Commands
+
     util_cmds = (
-        "/avatar [user] — Show a user's profile picture.\n"
-        "/support — Get bot support from the Frostline development team.\n"
-        "/help — Show this help message.\n"
+        "**/avatar `[user]`**\nShow a user's profile picture. If no user is provided, shows your own.\n\n"
+        "**/support**\nGet a link to the Frostline development team's support Discord.\n\n"
+        "**/help**\nShow this help message.\n"
     )
-    embed.add_field(name="Admin/Mod Commands", value=admin_cmds, inline=False)
-    embed.add_field(name="Birthday Commands", value=birthday_cmds, inline=False)
-    embed.add_field(name="Utility Commands", value=util_cmds, inline=False)
+
+    embed.add_field(name="🛡️ Admin/Mod Commands", value=admin_cmds, inline=False)
+    embed.add_field(name="🎂 Birthday Commands", value=birthday_cmds, inline=False)
+    embed.add_field(name="🔧 Utility Commands", value=util_cmds, inline=False)
+    embed.set_footer(text="Need more help? Join our support server with /support!")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 
 @bot.tree.command(name="support", description="Get support for the bot.")
