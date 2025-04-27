@@ -29,6 +29,9 @@ FrostMod V2 is a Discord bot designed for server moderation, user onboarding, an
 - **/logschannel <channel>**
   - Set the channel where server events (channel creation, deletion, member joins/leaves) are logged (admin or mod role).
 
+- **/bdaychannel <channel>**
+  - Set the channel where birthday announcements will be posted (admin or mod role).
+
 - **/warn <user> <reason>**
   - Warn a user with a reason (admin or mod role). This will be logged in the server's logs channel if set.
 
@@ -46,6 +49,9 @@ FrostMod V2 is a Discord bot designed for server moderation, user onboarding, an
 
 - **/support**
   - Get bot support from the Frostline development team.
+
+- **/setbirthday mm/dd/yyyy**
+  - Set your own birthday for birthday announcements (users can only set their own birthday).
 
 - **/help**
   - Lists all available commands and usage information.

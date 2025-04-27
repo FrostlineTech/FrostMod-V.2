@@ -24,6 +24,10 @@ class FrostModBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents, application_id=None)
         self.db_pool = None
+        # Store bot start time as UTC datetime
+        import datetime
+        # Provided local time is 2025-04-27T17:57:20-05:00
+        self.start_time = datetime.datetime(2025, 4, 27, 22, 57, 20, tzinfo=datetime.timezone.utc)
 
     async def setup_hook(self):
         # Register slash commands globally
@@ -55,6 +59,28 @@ class FrostModBot(commands.Bot):
 
 bot = FrostModBot()
 
+from itertools import cycle
+import asyncio
+
+status_messages = [
+    (discord.ActivityType.watching, "👀 Frostline Users"),
+    (discord.ActivityType.playing, "❄️ Enhancing Server Moderation")
+]
+status_cycle = cycle(status_messages)
+
+@bot.event
+async def on_ready():
+    print("Bot is ready. Starting status rotation.")
+    bot.loop.create_task(rotate_status())
+
+async def rotate_status():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        activity_type, message = next(status_cycle)
+        activity = discord.Activity(type=activity_type, name=message)
+        await bot.change_presence(status=discord.Status.online, activity=activity)
+        await asyncio.sleep(30)
+
 # --- Helper Functions ---
 
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
@@ -82,6 +108,77 @@ async def db_fetch(query, *args):
         return await conn.fetch(query, *args)
 
 # --- Moderation Commands ---
+
+# --- Birthday Commands ---
+from discord.app_commands import describe
+
+@bot.tree.command(name="setbirthday", description="Set your birthday (mm/dd/yyyy)")
+@describe(date="Your birthday in mm/dd/yyyy format")
+async def setbirthday(interaction: discord.Interaction, date: str):
+    """Allow a user to set their birthday."""
+    import datetime
+    try:
+        # Parse date
+        birthday = datetime.datetime.strptime(date, "%m/%d/%Y").date()
+        # Prevent future dates
+        if birthday > datetime.date.today():
+            await interaction.response.send_message("Birthday cannot be in the future!", ephemeral=True)
+            return
+        # Insert or update birthday
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO birthdays (guild_id, guild_name, user_id, username, birthday)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (guild_id, user_id) DO UPDATE SET
+                    username = EXCLUDED.username,
+                    birthday = EXCLUDED.birthday
+            ''',
+                interaction.guild.id,
+                interaction.guild.name,
+                interaction.user.id,
+                interaction.user.name,
+                birthday
+            )
+        await interaction.response.send_message(f"Your birthday has been set to {birthday.strftime('%B %d, %Y')}!", ephemeral=True)
+    except ValueError:
+        await interaction.response.send_message("Invalid date format! Please use mm/dd/yyyy.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Could not set birthday: {e}", ephemeral=True)
+
+@bot.tree.command(name="bdaychannel", description="Set the channel for birthday announcements (admin only)")
+@describe(channel="The channel to announce birthdays in")
+async def bdaychannel(interaction: discord.Interaction, channel: discord.TextChannel):
+    """Set the channel for birthday announcements. Admin only."""
+    if not await is_admin(interaction):
+        await interaction.response.send_message("You must be an administrator to set the birthday channel.", ephemeral=True)
+        return
+    try:
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE servers SET birthday_channel_id = $1 WHERE guild_id = $2
+            ''', channel.id, interaction.guild.id)
+        await interaction.response.send_message(f"Birthday announcements will be sent in {channel.mention}.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Could not set birthday channel: {e}", ephemeral=True)
+
+# --- Utility Commands ---
+@bot.tree.command(name="status", description="Show bot ping and uptime.")
+async def status(interaction: discord.Interaction):
+    """Show bot ping and uptime."""
+    import datetime
+    # Ping in ms
+    ping = round(bot.latency * 1000)
+    # Uptime calculation
+    now = datetime.datetime.now(datetime.timezone.utc)
+    delta = now - bot.start_time
+    days = delta.days
+    hours, remainder = divmod(delta.seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    uptime = f"{days}d {hours}h {minutes}m {seconds}s"
+    embed = discord.Embed(title="Bot Status", color=discord.Color.blue())
+    embed.add_field(name="Ping", value=f"{ping} ms", inline=True)
+    embed.add_field(name="Uptime", value=uptime, inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="mrole", description="Set the moderator role that can use admin commands.")
 @app_commands.describe(role="The role to grant moderator permissions.")
@@ -309,12 +406,14 @@ async def help_command(interaction: discord.Interaction):
         "/wmessage <message> — Set the welcome message.\n"
         "/joinrole <role> — Set the join role for new members.\n"
         "/logschannel <channel> — Set the logging channel.\n"
+        "/bdaychannel <channel> — Set the channel for birthday announcements.\n"
     )
     # Utility Commands
     util_cmds = (
         "/avatar [user] — Show a user's profile picture.\n"
         "/support — Get bot support from the Frostline development team.\n"
         "/help — Show this help message.\n"
+        "/setbirthday mm/dd/yyyy — Set your birthday for birthday announcements.\n"
     )
     embed.add_field(name="Admin Commands", value=admin_cmds, inline=False)
     embed.add_field(name="Utility Commands", value=util_cmds, inline=False)
