@@ -64,7 +64,8 @@ import asyncio
 
 status_messages = [
     (discord.ActivityType.watching, "👀 Frostline Users"),
-    (discord.ActivityType.playing, "❄️ Enhancing Server Moderation")
+    (discord.ActivityType.playing, "❄️ Enhancing Server Moderation"),
+    (discord.ActivityType.watching, "❓ for /help")
 ]
 status_cycle = cycle(status_messages)
 
@@ -134,7 +135,7 @@ async def rotate_status():
         activity_type, message = next(status_cycle)
         activity = discord.Activity(type=activity_type, name=message)
         await bot.change_presence(status=discord.Status.online, activity=activity)
-        await asyncio.sleep(30)
+        await asyncio.sleep(5)
 
 # --- Helper Functions ---
 
@@ -408,36 +409,36 @@ async def on_member_join(member):
                 INSERT INTO servers (guild_id, guild_name) VALUES ($1, $2)
                 ON CONFLICT (guild_id) DO UPDATE SET guild_name = EXCLUDED.guild_name
             ''', member.guild.id, member.guild.name)
-        print(f"[DB UPSERT] servers: {member.guild.name} ({member.guild.id})")
-        # Now log the join
-        await conn.execute('''
-            INSERT INTO user_joins (guild_id, user_id, username) VALUES ($1, $2, $3)
-            ON CONFLICT (guild_id, user_id) DO NOTHING
-        ''', member.guild.id, member.id, str(member))
-        print(f"[DB INSERT] user_joins: {member} ({member.id}) in guild {member.guild.name} ({member.guild.id})")
-        # Fetch welcome channel, message, and join role
-        row = await conn.fetchrow('''
-            SELECT welcome_channel_id, welcome_message, join_role_id FROM servers WHERE guild_id = $1
-        ''', member.guild.id)
-        # Assign join role if set
-        if row and row['join_role_id']:
-            role = member.guild.get_role(row['join_role_id'])
-            if role:
-                try:
-                    await member.add_roles(role, reason="Auto join role")
-                except Exception as e:
-                    print(f"Error assigning join role: {e}")
-        # Send welcome message if set
-        if row and row['welcome_channel_id'] and row['welcome_message']:
-            channel = member.guild.get_channel(row['welcome_channel_id'])
-            if channel:
-                welcome_msg = row['welcome_message'].replace('{user}', member.mention).replace('{membercount}', str(member.guild.member_count))
-                embed = discord.Embed(description=welcome_msg, color=discord.Color.blue())
-                if member.guild.icon:
-                    embed.set_thumbnail(url=member.guild.icon.url)
-                embed.set_author(name=member.guild.name)
-                await channel.send(embed=embed)
-        print(f"Logged join: {member} in guild {member.guild.name}")
+            print(f"[DB UPSERT] servers: {member.guild.name} ({member.guild.id})")
+            # Now log the join
+            await conn.execute('''
+                INSERT INTO user_joins (guild_id, user_id, username) VALUES ($1, $2, $3)
+                ON CONFLICT (guild_id, user_id) DO NOTHING
+            ''', member.guild.id, member.id, str(member))
+            print(f"[DB INSERT] user_joins: {member} ({member.id}) in guild {member.guild.name} ({member.guild.id})")
+            # Fetch welcome channel, message, and join role
+            row = await conn.fetchrow('''
+                SELECT welcome_channel_id, welcome_message, join_role_id FROM servers WHERE guild_id = $1
+            ''', member.guild.id)
+            # Assign join role if set
+            if row and row['join_role_id']:
+                role = member.guild.get_role(row['join_role_id'])
+                if role:
+                    try:
+                        await member.add_roles(role, reason="Auto join role")
+                    except Exception as e:
+                        print(f"Error assigning join role: {e}")
+            # Send welcome message if set
+            if row and row['welcome_channel_id'] and row['welcome_message']:
+                channel = member.guild.get_channel(row['welcome_channel_id'])
+                if channel:
+                    welcome_msg = row['welcome_message'].replace('{user}', member.mention).replace('{membercount}', str(member.guild.member_count))
+                    embed = discord.Embed(description=welcome_msg, color=discord.Color.blue())
+                    if member.guild.icon:
+                        embed.set_thumbnail(url=member.guild.icon.url)
+                    embed.set_author(name=member.guild.name)
+                    await channel.send(embed=embed)
+            print(f"Logged join: {member} in guild {member.guild.name}")
     except Exception as e:
         print(f"Error logging join for {member} in guild {member.guild.name}: {e}")
 
@@ -600,11 +601,45 @@ async def purge(interaction: discord.Interaction, amount: int):
     await interaction.response.defer(ephemeral=True)
     
     try:
-        # Delete messages
+        # Bulk delete messages (only works for messages <14 days old)
         deleted = await interaction.channel.purge(limit=amount)
-        
+        deleted_count = len(deleted)
+
+        # If fewer messages were deleted than requested, try to delete older messages one-by-one
+        if deleted_count < amount:
+            # Fetch messages again, skipping those already deleted
+            to_delete = []
+            async for msg in interaction.channel.history(limit=amount*2):
+                if msg not in deleted and not msg.pinned:
+                    to_delete.append(msg)
+                if len(to_delete) >= (amount - deleted_count):
+                    break
+            # Delete individually with delay to avoid rate limits
+            import logging
+            for msg in to_delete:
+                try:
+                    await msg.delete()
+                    deleted_count += 1
+                    await asyncio.sleep(0.7)  # 700ms between deletes
+                except discord.errors.HTTPException as e:
+                    if e.status == 429:
+                        retry_after = getattr(e, 'retry_after', None)
+                        if retry_after is None:
+                            # Try to parse from response if available
+                            retry_after = getattr(e.response, 'headers', {}).get('Retry-After')
+                            try:
+                                retry_after = float(retry_after)
+                            except (TypeError, ValueError):
+                                retry_after = 2.0  # fallback
+                        logging.warning(f"Rate limited while deleting message. Sleeping for {retry_after} seconds.")
+                        await asyncio.sleep(retry_after)
+                        continue
+                    else:
+                        logging.error(f"Failed to delete message: {e}")
+                        continue
+
         # Send confirmation
-        await interaction.followup.send(f"Successfully deleted {len(deleted)} messages.", ephemeral=True)
+        await interaction.followup.send(f"Successfully deleted {deleted_count} messages.", ephemeral=True)
         
         # Log to server's logs channel if set
         async with bot.db_pool.acquire() as conn:
@@ -614,7 +649,7 @@ async def purge(interaction: discord.Interaction, amount: int):
             if log_channel:
                 embed = discord.Embed(
                     title="Messages Purged",
-                    description=f"**Channel:** {interaction.channel.mention}\n**Amount:** {len(deleted)} messages\n**Moderator:** {interaction.user.mention}",
+                    description=f"**Channel:** {interaction.channel.mention}\n**Amount:** {deleted_count} messages\n**Moderator:** {interaction.user.mention}",
                     color=discord.Color.red(),
                     timestamp=discord.utils.utcnow()
                 )
