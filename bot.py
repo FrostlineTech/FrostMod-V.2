@@ -1,6 +1,6 @@
 import os
 import discord
-from discord import app_commands
+from discord import app_commands, ui
 from discord.ext import commands
 import asyncpg
 from dotenv import load_dotenv
@@ -18,6 +18,7 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 # Set up Discord intents before bot definition
 intents = discord.Intents.default()
 intents.members = True
+intents.message_content = True
 
 # FrostModBot definition
 class FrostModBot(commands.Bot):
@@ -285,6 +286,191 @@ async def bdaychannel(interaction: discord.Interaction, channel: discord.TextCha
         await interaction.response.send_message(f"Birthday announcements will be sent in {channel.mention}.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"[ERROR] Could not set birthday channel: {e}", ephemeral=True)
+
+# --- Ticket System ---
+
+@bot.tree.command(name="ticketchannel", description="Set the channel for ticket creation.")
+@app_commands.describe(channel="The channel where users can create tickets.")
+async def ticketchannel(interaction: discord.Interaction, channel: discord.TextChannel):
+    """Set the channel for ticket creation. Admin only."""
+    if not await is_admin(interaction):
+        await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
+        return
+    try:
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE servers SET ticket_channel_id = $1 WHERE guild_id = $2
+            ''', channel.id, interaction.guild.id)
+            
+            # Check if the server exists in the database, if not insert it
+            server_exists = await conn.fetchval('''
+                SELECT COUNT(*) FROM servers WHERE guild_id = $1
+            ''', interaction.guild.id)
+            
+            if server_exists == 0:
+                await conn.execute('''
+                    INSERT INTO servers (guild_id, ticket_channel_id) VALUES ($1, $2)
+                ''', interaction.guild.id, channel.id)
+        
+        # Create and send the ticket embed with button
+        await create_ticket_embed(channel)
+        
+        print(f"[DB UPDATE] servers: Set ticket_channel_id={channel.id} for guild {interaction.guild.name} ({interaction.guild.id})")
+        await interaction.response.send_message(f"Ticket channel set to {channel.mention}. A ticket creation embed has been posted in that channel.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Failed to set ticket channel: {e}", ephemeral=True)
+
+# Ticket Button UI
+class TicketButton(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    
+    @ui.button(label="Open Ticket", style=discord.ButtonStyle.primary, custom_id="create_ticket", emoji="❄️")
+    async def create_ticket_button(self, interaction: discord.Interaction, button: ui.Button):
+        # Check if user already has an open ticket
+        async with bot.db_pool.acquire() as conn:
+            existing_ticket = await conn.fetchrow('''
+                SELECT * FROM tickets 
+                WHERE guild_id = $1 AND created_by_id = $2 AND status = 'open'
+            ''', interaction.guild.id, interaction.user.id)
+            
+            if existing_ticket:
+                channel = interaction.guild.get_channel(existing_ticket['channel_id'])
+                if channel:
+                    await interaction.response.send_message(f"You already have an open ticket: {channel.mention}", ephemeral=True)
+                    return
+            
+            # Create a new ticket
+            await create_new_ticket(interaction)
+
+async def create_ticket_embed(channel):
+    """Create and send the ticket embed with button to the specified channel."""
+    embed = discord.Embed(
+        title="❄️ Frostline Support Tickets",
+        description="Need assistance? Click the button below to create a support ticket.",
+        color=discord.Color.from_rgb(0, 191, 255)  # Deep sky blue for Frostline branding
+    )
+    embed.add_field(name="How it works", value="When you create a ticket, a private channel will be created where you can discuss your issue with our staff.")
+    embed.set_footer(text=f"Frostline Support System | Powered by FrostMod")
+    
+    # Clear existing messages if any
+    try:
+        await channel.purge(limit=10, check=lambda m: m.author == bot.user and "Support Ticket System" in m.content)
+    except:
+        pass
+    
+    # Send the embed with the button
+    await channel.send(embed=embed, view=TicketButton())
+
+async def create_new_ticket(interaction):
+    """Create a new support ticket."""
+    guild = interaction.guild
+    user = interaction.user
+    
+    # Defer the response since ticket creation might take a moment
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        # Get the next ticket number for this guild
+        async with bot.db_pool.acquire() as conn:
+            ticket_count = await conn.fetchval('''
+                SELECT COUNT(*) FROM tickets WHERE guild_id = $1
+            ''', guild.id)
+            
+            ticket_number = ticket_count + 1
+            
+            # Create the ticket channel
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+            }
+            
+            # Add permissions for admin roles
+            admin_role = None
+            mod_role_id = await conn.fetchval('''
+                SELECT mod_role_id FROM servers WHERE guild_id = $1
+            ''', guild.id)
+            
+            if mod_role_id:
+                mod_role = guild.get_role(mod_role_id)
+                if mod_role:
+                    overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            
+            # Create the ticket channel
+            channel_name = f"ticket-{ticket_number}-{user.name}".lower().replace(' ', '-')
+            ticket_channel = await guild.create_text_channel(
+                name=channel_name,
+                overwrites=overwrites,
+                reason=f"Support ticket created by {user}"
+            )
+            
+            # Save the ticket in the database
+            await conn.execute('''
+                INSERT INTO tickets (guild_id, guild_name, created_by_id, created_by_username, channel_id)
+                VALUES ($1, $2, $3, $4, $5)
+            ''', guild.id, guild.name, user.id, str(user), ticket_channel.id)
+            
+            # Create the initial ticket message
+            embed = discord.Embed(
+                title=f"❄️ Frostline Support | Ticket #{ticket_number}",
+                description=f"Thank you for creating a ticket, {user.mention}. A staff member will assist you shortly.",
+                color=discord.Color.from_rgb(0, 191, 255),  # Deep sky blue for Frostline branding
+                timestamp=discord.utils.utcnow()
+            )
+            embed.add_field(name="Instructions", value="Please describe your issue in detail, and a staff member will respond as soon as possible.")
+            embed.set_footer(text=f"Frostline Support | Ticket ID: {ticket_number}")
+            
+            # Create the close ticket button
+            class CloseTicketView(ui.View):
+                def __init__(self):
+                    super().__init__(timeout=None)
+                
+                @ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, custom_id=f"close_ticket_{ticket_channel.id}", emoji="❌")
+                async def close_ticket(self, close_interaction: discord.Interaction, button: ui.Button):
+                    # Only staff or the ticket creator can close the ticket
+                    if close_interaction.user.id != user.id and not await is_admin(close_interaction):
+                        await close_interaction.response.send_message("You don't have permission to close this ticket.", ephemeral=True)
+                        return
+                    
+                    await close_interaction.response.send_message("Closing ticket...", ephemeral=True)
+                    
+                    # Update the ticket status in the database
+                    async with bot.db_pool.acquire() as close_conn:
+                        await close_conn.execute('''
+                            UPDATE tickets 
+                            SET status = 'closed', closed_at = CURRENT_TIMESTAMP, 
+                                closed_by_id = $1, closed_by_username = $2
+                            WHERE channel_id = $3
+                        ''', close_interaction.user.id, str(close_interaction.user), ticket_channel.id)
+                    
+                    # Send a closing message
+                    closing_embed = discord.Embed(
+                        title="❄️ Ticket Closed",
+                        description=f"This ticket has been closed by {close_interaction.user.mention}.",
+                        color=discord.Color.from_rgb(220, 20, 60),  # Crimson red for closed tickets
+                        timestamp=discord.utils.utcnow()
+                    )
+                    closing_embed.add_field(name="Ticket Information", value=f"This channel will be deleted in 10 seconds.")
+                    closing_embed.set_footer(text="Frostline Support System | Thank you for using our services")
+                    await ticket_channel.send(embed=closing_embed)
+                    
+                    # Always delete the channel after a delay
+                    await asyncio.sleep(10)  # Give users time to see the closing message
+                    try:
+                        await ticket_channel.delete(reason="Ticket closed")
+                    except Exception as e:
+                        print(f"Error deleting ticket channel: {e}")
+            
+            # Send the welcome message with close button
+            await ticket_channel.send(f"{user.mention} {guild.default_role.mention}", embed=embed, view=CloseTicketView())
+            
+            # Notify the user
+            await interaction.followup.send(f"Your ticket has been created: {ticket_channel.mention}", ephemeral=True)
+            
+    except Exception as e:
+        print(f"Error creating ticket: {e}")
+        await interaction.followup.send(f"Error creating ticket: {e}", ephemeral=True)
 
 # --- Utility Commands ---
 @bot.tree.command(name="status", description="Show bot ping and uptime.")
@@ -839,6 +1025,81 @@ async def on_user_update(before, after):
                     await log_channel.send(embed=embed)
         except Exception as e:
             print(f"Error logging user update: {e}")
+
+# Persistent views for ticket buttons
+@bot.event
+async def on_ready():
+    print("Bot is ready. Starting status rotation.")
+    bot.loop.create_task(rotate_status())
+    bot.loop.create_task(daily_birthday_check())
+    
+    # Add persistent view for ticket buttons
+    bot.add_view(TicketButton())
+    
+    # Initialize database tables if they don't exist
+    try:
+        async with bot.db_pool.acquire() as conn:
+            # Create servers table if it doesn't exist
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS servers (
+                    guild_id BIGINT PRIMARY KEY,
+                    welcome_channel_id BIGINT,
+                    welcome_message TEXT,
+                    join_role_id BIGINT,
+                    logs_channel_id BIGINT,
+                    mod_role_id BIGINT,
+                    birthday_channel_id BIGINT,
+                    ticket_channel_id BIGINT
+                )
+            ''')
+            
+            # Create warnings table if it doesn't exist
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS warnings (
+                    id SERIAL PRIMARY KEY,
+                    guild_id BIGINT,
+                    user_id BIGINT,
+                    moderator_id BIGINT,
+                    reason TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Create birthdays table if it doesn't exist
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS birthdays (
+                    id SERIAL PRIMARY KEY,
+                    guild_id BIGINT,
+                    user_id BIGINT,
+                    birthday DATE,
+                    UNIQUE(guild_id, user_id)
+                )
+            ''')
+            
+            # Create tickets table if it doesn't exist
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS tickets (
+                    ticket_id SERIAL PRIMARY KEY,
+                    guild_id BIGINT NOT NULL,
+                    guild_name VARCHAR(100) NOT NULL,
+                    created_by_id BIGINT NOT NULL,
+                    created_by_username VARCHAR(100) NOT NULL,
+                    closed_by_id BIGINT,
+                    closed_by_username VARCHAR(100),
+                    channel_id BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    closed_at TIMESTAMP,
+                    status VARCHAR(20) DEFAULT 'open'
+                )
+            ''')
+            
+            # Create indexes for faster lookups
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_tickets_guild_id ON tickets(guild_id)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_tickets_created_by_id ON tickets(created_by_id)')
+            
+            print("Database tables initialized successfully!")
+    except Exception as e:
+        print(f"Error initializing database tables: {e}")
 
 if __name__ == "__main__":
     bot.run(TOKEN)

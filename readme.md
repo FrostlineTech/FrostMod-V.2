@@ -1,17 +1,25 @@
 # FrostMod V2 Discord Bot
 
-FrostMod V2 is a Discord bot designed for server moderation, user onboarding, and event logging. It uses a local PostgreSQL database for persistent storage of server settings and logs.
+FrostMod V2 is a powerful, scalable Discord moderation bot built for Frostline Solutions. It provides advanced moderation, onboarding, logging, and a branded ticketing system for support. Data is stored securely in PostgreSQL.
 
 ## Features
-- **Welcome System**: Greet new members with a customizable welcome message (supports `{user}` and `{membercount}` placeholders) in a channel of your choice.
-- **Automatic Join Role**: Assign a specific role to new members automatically.
-- **Moderation Tools**: Warn users, purge messages, and keep track of user infractions.
-- **Logging System**: Log important server events (channel creation/deletion, member joins/leaves, username/avatar changes) to a designated channel with detailed, attractive embeds.
+- **Welcome System**: Greet new members with a customizable message (supports `{user}` and `{membercount}` placeholders).
+- **Automatic Join Role**: Assign a role to new members automatically.
+- **Moderation Tools**: Warn users, purge messages (by user or count), and manage infractions.
+- **Logging System**: Log server events (channel creation/deletion, member joins/leaves, username/avatar changes) to a designated channel with branded embeds.
+- **Ticketing System**: Branded Frostline ticket system with `/ticketchannel` setup, "Open Ticket" button, private ticket channels, and database tracking.
+- **Birthday System**: Announce user birthdays in a dedicated channel.
 - **Slash Commands**: Modern, easy-to-use Discord slash commands for all features.
+
+## Ticketing System
+- **/ticketchannel <channel>** — Admins set the ticket creation channel. The bot posts a branded embed with an "Open Ticket" button.
+- **Open Ticket Button** — Users open a private support channel, visible only to them and staff.
+- **Ticket Management** — Staff and the user can close tickets. Channels are deleted after closing, and all ticket actions are tracked in the database for auditing.
 
 ## Commands
 
 ### Admin/Mod Commands
+- **/ticketchannel <channel>** — Set the channel for ticket creation (admins only)
 - **/mrole <role>** — Set the moderator role for admin commands (admins only)
 - **/welcome <channel>** — Set the welcome channel
 - **/wmessage <message>** — Set the welcome message
@@ -36,6 +44,4 @@ FrostMod V2 is a Discord bot designed for server moderation, user onboarding, an
 - **/support** — Get bot support from the Frostline development team
 - **/help** — Show this help message
 - **/status** — Show bot ping and uptime
-
-
 
