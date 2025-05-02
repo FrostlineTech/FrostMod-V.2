@@ -1,9 +1,21 @@
 import os
 import discord
+import asyncio
+import logging
+import datetime
+from itertools import cycle
+from collections import defaultdict
 from discord import app_commands, ui
 from discord.ext import commands
 import asyncpg
 from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('frostmod')
 
 # Load environment variables
 load_dotenv()
@@ -14,6 +26,7 @@ DB_PASS = os.getenv("DB_PASS")
 DB_NAME = os.getenv("DB_NAME")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 # Set up Discord intents before bot definition
 intents = discord.Intents.default()
@@ -60,9 +73,6 @@ class FrostModBot(commands.Bot):
 
 bot = FrostModBot()
 
-from itertools import cycle
-import asyncio
-
 status_messages = [
     (discord.ActivityType.watching, "👀 Frostline Users"),
     (discord.ActivityType.playing, "❄️ Enhancing Server Moderation"),
@@ -72,12 +82,22 @@ status_cycle = cycle(status_messages)
 
 @bot.event
 async def on_ready():
-    print("Bot is ready. Starting status rotation.")
+    logger.info(f"{bot.user.name} is ready. Connected to {len(bot.guilds)} guilds.")
+    
+    # Start background tasks
     bot.loop.create_task(rotate_status())
     bot.loop.create_task(daily_birthday_check())
+    
+    # Add persistent view for ticket buttons
+    bot.add_view(TicketButton())
+    
+    # Log registered commands for debugging
+    commands_registered = list(bot.tree.get_commands())
+    logger.info(f"Registered {len(commands_registered)} slash commands")
+    for cmd in commands_registered:
+        logger.info(f"- /{cmd.name}: {cmd.description}")
 
 async def daily_birthday_check():
-    import datetime, asyncio
     await bot.wait_until_ready()
     while not bot.is_closed():
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -96,7 +116,6 @@ async def daily_birthday_check():
                     SELECT * FROM birthdays WHERE EXTRACT(MONTH FROM birthday) = $1 AND EXTRACT(DAY FROM birthday) = $2
                 ''', month, day)
                 # Group by guild
-                from collections import defaultdict
                 guild_birthdays = defaultdict(list)
                 for row in rows:
                     guild_birthdays[row['guild_id']].append(row)
@@ -126,45 +145,199 @@ async def daily_birthday_check():
                     try:
                         await channel.send(embed=embed)
                     except Exception as e:
-                        print(f"[Birthday Announce ERROR] {e}")
+                        logger.error(f"Birthday Announce ERROR: {e}")
         except Exception as e:
-            print(f"[Birthday Check ERROR] {e}")
+            logger.error(f"Birthday Check ERROR: {e}")
 
 async def rotate_status():
     await bot.wait_until_ready()
     while not bot.is_closed():
         activity_type, message = next(status_cycle)
         activity = discord.Activity(type=activity_type, name=message)
-        await bot.change_presence(status=discord.Status.online, activity=activity)
-        await asyncio.sleep(5)
+        try:
+            await bot.change_presence(status=discord.Status.online, activity=activity)
+        except Exception as e:
+            logger.exception(f"Status Rotation Error: Failed to change presence: {e}")
+        await asyncio.sleep(60)  # Changed to 60 seconds to reduce API calls
+
 
 # --- Helper Functions ---
 
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+# --- Chat Filter Wordlists ---
+# These sets contain filtered words with different severity levels
+# Words are stored in lowercase for case-insensitive matching
+STRICT_WORDS = {
+    # General profanity, mild offensive terms
+    "fuck", "shit", "bitch", "fck", "whore", "ass", "damn", "bastard"
+}
 
-import asyncio
+MODERATE_WORDS = {
+    # More severe offensive terms and slurs
+    "nigger", "wetback", "tranny", "rape", "cuck", "slut", "faggot"
+}
+
+LIGHT_WORDS = {
+    # Most severe hate speech and slurs
+    "nigger", "kike", "chink", "retard", "spic"
+}
+
+# Convert all words to lowercase for case-insensitive matching
+STRICT_WORDS = {word.lower() for word in STRICT_WORDS}
+MODERATE_WORDS = {word.lower() for word in MODERATE_WORDS}
+LIGHT_WORDS = {word.lower() for word in LIGHT_WORDS}
+
+def check_message_for_filter(message_content, filter_level):
+    """Check if a message contains filtered words based on the filter level.
+    
+    Args:
+        message_content (str): The message content to check
+        filter_level (str): The filter level ('strict', 'moderate', or 'light')
+        
+    Returns:
+        tuple: (bool, str) - Whether the message is blocked and the offending word if any
+    """
+    if not message_content or not filter_level:
+        return False, None
+        
+    lowered = message_content.lower()
+    
+    # Use sets for more efficient lookups
+    if filter_level == 'strict':
+        for word in STRICT_WORDS | MODERATE_WORDS | LIGHT_WORDS:
+            if word.lower() in lowered:
+                return True, word
+    elif filter_level == 'moderate':
+        for word in MODERATE_WORDS | LIGHT_WORDS:
+            if word.lower() in lowered:
+                return True, word
+    elif filter_level == 'light':
+        for word in LIGHT_WORDS:
+            if word.lower() in lowered:
+                return True, word
+    return False, None
+
+async def get_filter_level(guild_id):
+    """Get the filter level for a guild.
+    
+    Args:
+        guild_id (int): The guild ID
+        
+    Returns:
+        str: The filter level ('strict', 'moderate', or 'light')
+    """
+    try:
+        async with bot.db_pool.acquire() as conn:
+            row = await conn.fetchrow('''SELECT filter_level FROM servers WHERE guild_id = $1''', guild_id)
+        return row['filter_level'] if row and row['filter_level'] else 'light'
+    except Exception as e:
+        logger.error(f"Error getting filter level for guild {guild_id}: {e}")
+        return 'light'  # Default to light filtering if there's an error
+
+async def set_filter_level(guild_id, level, guild_name=None):
+    """Set the filter level for a guild.
+    
+    Args:
+        guild_id (int): The guild ID
+        level (str): The filter level to set
+        guild_name (str, optional): The guild name
+    """
+    try:
+        async with bot.db_pool.acquire() as conn:
+            # Use upsert pattern for cleaner code
+            await conn.execute('''
+                INSERT INTO servers (guild_id, guild_name, filter_level) 
+                VALUES ($1, $2, $3)
+                ON CONFLICT (guild_id) 
+                DO UPDATE SET filter_level = $3, guild_name = COALESCE($2, servers.guild_name)
+            ''', guild_id, guild_name or "Unknown", level)
+        logger.info(f"Set filter_level={level} for guild {guild_id}")
+    except Exception as e:
+        logger.error(f"Error setting filter level for guild {guild_id}: {e}")
+
+# Helper functions for permission checks
 
 async def is_admin(interaction):
+    """Check if a user has admin permissions.
+    
+    Args:
+        interaction (discord.Interaction): The interaction object
+        
+    Returns:
+        bool: Whether the user has admin permissions
+    """
+    # First check for administrator permission or bot owner
     if interaction.user.guild_permissions.administrator or interaction.user.id == OWNER_ID:
         return True
-    async with bot.db_pool.acquire() as conn:
-        row = await conn.fetchrow('''SELECT mod_role_id FROM servers WHERE guild_id = $1''', interaction.guild.id)
-    if row and row['mod_role_id']:
-        mod_role = interaction.guild.get_role(row['mod_role_id'])
-        if mod_role and mod_role in interaction.user.roles:
-            print(f"[is_admin DEBUG] User has mod role: {mod_role.name}")
-            return True
+        
+    try:
+        # Then check for mod role
+        async with bot.db_pool.acquire() as conn:
+            row = await conn.fetchrow('''SELECT mod_role_id FROM servers WHERE guild_id = $1''', interaction.guild.id)
+        
+        if row and row['mod_role_id']:
+            mod_role = interaction.guild.get_role(row['mod_role_id'])
+            if mod_role and mod_role in interaction.user.roles:
+                logger.debug(f"User {interaction.user.name} has mod role: {mod_role.name}")
+                return True
+    except Exception as e:
+        logger.error(f"Error checking admin status: {e}")
+        # Fall back to just checking administrator permission if DB fails
+        return interaction.user.guild_permissions.administrator
+        
     return False
 
 async def db_execute(query, *args):
-    async with bot.db_pool.acquire() as conn:
-        return await conn.execute(query, *args)
+    """Execute a database query.
+    
+    Args:
+        query (str): The SQL query to execute
+        *args: The arguments for the query
+        
+    Returns:
+        str: The result of the query execution
+    """
+    try:
+        async with bot.db_pool.acquire() as conn:
+            return await conn.execute(query, *args)
+    except Exception as e:
+        logger.error(f"Database execute error: {e}\nQuery: {query}\nArgs: {args}")
+        raise
 
 async def db_fetch(query, *args):
-    async with bot.db_pool.acquire() as conn:
-        return await conn.fetch(query, *args)
+    """Fetch results from a database query.
+    
+    Args:
+        query (str): The SQL query to execute
+        *args: The arguments for the query
+        
+    Returns:
+        list: The results of the query
+    """
+    try:
+        async with bot.db_pool.acquire() as conn:
+            return await conn.fetch(query, *args)
+    except Exception as e:
+        logger.error(f"Database fetch error: {e}\nQuery: {query}\nArgs: {args}")
+        raise
 
 # --- Moderation Commands ---
+
+from discord import app_commands
+
+@bot.tree.command(name="filter", description="Set the chat filter level for this server (admin only)")
+@app_commands.describe(level="Filter level: light, moderate, or strict")
+@app_commands.choices(level=[
+    app_commands.Choice(name="Light (only blocks egregious text)", value="light"),
+    app_commands.Choice(name="Moderate (no slurs)", value="moderate"),
+    app_commands.Choice(name="Strict (fully family friendly)", value="strict")
+])
+async def filter_command(interaction: discord.Interaction, level: app_commands.Choice[str]):
+    """Admin-only: Set the chat filter level for this server."""
+    if not await is_admin(interaction):
+        await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
+        return
+    await set_filter_level(interaction.guild.id, level.value, interaction.guild.name)
+    await interaction.response.send_message(f"Chat filter level set to **{level.value}**.", ephemeral=True)
 
 # --- Birthday Commands ---
 from discord.app_commands import describe
@@ -240,14 +413,24 @@ async def delbday(interaction: discord.Interaction, user: discord.Member):
 @describe(date="Your birthday in mm/dd/yyyy format")
 async def setbirthday(interaction: discord.Interaction, date: str):
     """Allow a user to set their birthday."""
-    import datetime
     try:
         # Parse date
         birthday = datetime.datetime.strptime(date, "%m/%d/%Y").date()
+        
+        # Validate the date
+        today = datetime.date.today()
+        
         # Prevent future dates
-        if birthday > datetime.date.today():
+        if birthday > today:
             await interaction.response.send_message("Birthday cannot be in the future!", ephemeral=True)
             return
+            
+        # Reasonable age check (older than 120 years is unlikely)
+        years_ago = today.replace(year=today.year - 120)
+        if birthday < years_ago:
+            await interaction.response.send_message("Please enter a valid birthday. The date you entered is too far in the past.", ephemeral=True)
+            return
+            
         # Insert or update birthday
         async with bot.db_pool.acquire() as conn:
             await conn.execute('''
@@ -263,12 +446,25 @@ async def setbirthday(interaction: discord.Interaction, date: str):
                 interaction.user.name,
                 birthday
             )
-        print(f"[BIRTHDAY ADDED/UPDATED] {interaction.user} ({interaction.user.id}) in guild {interaction.guild.name} ({interaction.guild.id}): {birthday}")
-        await interaction.response.send_message(f"Your birthday has been set to {birthday.strftime('%B %d, %Y')}!", ephemeral=True)
+        
+        logger.info(f"Birthday added/updated for {interaction.user} ({interaction.user.id}) in guild {interaction.guild.name}: {birthday}")
+        
+        # Send confirmation with formatted date
+        formatted_date = birthday.strftime('%B %d, %Y')
+        embed = discord.Embed(
+            title="Birthday Set",
+            description=f"Your birthday has been set to **{formatted_date}**!",
+            color=discord.Color.magenta()
+        )
+        embed.set_footer(text="You'll receive birthday wishes on your special day!")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
     except ValueError:
-        await interaction.response.send_message("Invalid date format! Please use mm/dd/yyyy.", ephemeral=True)
+        await interaction.response.send_message("Invalid date format! Please use mm/dd/yyyy (for example: 12/25/2000).", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"[ERROR] Could not set birthday: {e}", ephemeral=True)
+        logger.error(f"Error in setbirthday command: {e}")
+        await interaction.response.send_message("An error occurred while setting your birthday. Please try again later.", ephemeral=True)
 
 @bot.tree.command(name="bdaychannel", description="Set the channel for birthday announcements (admin only)")
 @describe(channel="The channel to announce birthdays in")
@@ -587,7 +783,9 @@ async def warns(interaction: discord.Interaction, user: discord.Member):
 
 @bot.event
 async def on_member_join(member):
-    print("on_member_join fired!")  # Basic log for testing
+    """Handle member join events - log to database, assign roles, and send welcome messages."""
+    logger.info(f"Member joined: {member} ({member.id}) in guild {member.guild.name} ({member.guild.id})")
+    
     try:
         async with bot.db_pool.acquire() as conn:
             # Upsert the guild first
@@ -595,38 +793,99 @@ async def on_member_join(member):
                 INSERT INTO servers (guild_id, guild_name) VALUES ($1, $2)
                 ON CONFLICT (guild_id) DO UPDATE SET guild_name = EXCLUDED.guild_name
             ''', member.guild.id, member.guild.name)
-            print(f"[DB UPSERT] servers: {member.guild.name} ({member.guild.id})")
-            # Now log the join
+            
+            # Log the join event to database
             await conn.execute('''
-                INSERT INTO user_joins (guild_id, user_id, username) VALUES ($1, $2, $3)
-                ON CONFLICT (guild_id, user_id) DO NOTHING
-            ''', member.guild.id, member.id, str(member))
-            print(f"[DB INSERT] user_joins: {member} ({member.id}) in guild {member.guild.name} ({member.guild.id})")
-            # Fetch welcome channel, message, and join role
+                INSERT INTO user_joins (guild_id, user_id, username, joined_at) 
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (guild_id, user_id) DO UPDATE SET 
+                    username = EXCLUDED.username,
+                    joined_at = EXCLUDED.joined_at
+            ''', member.guild.id, member.id, str(member), discord.utils.utcnow())
+            
+            # Fetch server configuration
             row = await conn.fetchrow('''
-                SELECT welcome_channel_id, welcome_message, join_role_id FROM servers WHERE guild_id = $1
+                SELECT welcome_channel_id, welcome_message, join_role_id, logs_channel_id 
+                FROM servers WHERE guild_id = $1
             ''', member.guild.id)
+            
+            if not row:
+                return
+                
             # Assign join role if set
-            if row and row['join_role_id']:
+            if row['join_role_id']:
                 role = member.guild.get_role(row['join_role_id'])
                 if role:
                     try:
                         await member.add_roles(role, reason="Auto join role")
+                        logger.info(f"Assigned role {role.name} to {member} in {member.guild.name}")
                     except Exception as e:
-                        print(f"Error assigning join role: {e}")
+                        logger.error(f"Error assigning join role to {member}: {e}")
+            
             # Send welcome message if set
-            if row and row['welcome_channel_id'] and row['welcome_message']:
+            if row['welcome_channel_id'] and row['welcome_message']:
                 channel = member.guild.get_channel(row['welcome_channel_id'])
                 if channel:
-                    welcome_msg = row['welcome_message'].replace('{user}', member.mention).replace('{membercount}', str(member.guild.member_count))
-                    embed = discord.Embed(description=welcome_msg, color=discord.Color.blue())
-                    if member.guild.icon:
-                        embed.set_thumbnail(url=member.guild.icon.url)
-                    embed.set_author(name=member.guild.name)
-                    await channel.send(embed=embed)
-            print(f"Logged join: {member} in guild {member.guild.name}")
+                    try:
+                        # Format welcome message with user mention and member count
+                        welcome_msg = row['welcome_message']
+                        welcome_msg = welcome_msg.replace('{user}', member.mention)
+                        welcome_msg = welcome_msg.replace('{membercount}', str(member.guild.member_count))
+                        welcome_msg = welcome_msg.replace('{servername}', member.guild.name)
+                        
+                        # Create and send welcome embed
+                        embed = discord.Embed(
+                            title=f"Welcome to {member.guild.name}!",
+                            description=welcome_msg,
+                            color=discord.Color.blue(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        
+                        # Add user avatar and server icon
+                        embed.set_thumbnail(url=member.display_avatar.url)
+                        if member.guild.icon:
+                            embed.set_author(name=member.guild.name, icon_url=member.guild.icon.url)
+                        else:
+                            embed.set_author(name=member.guild.name)
+                            
+                        embed.set_footer(text=f"Member #{member.guild.member_count}")
+                        
+                        await channel.send(embed=embed)
+                        logger.info(f"Sent welcome message for {member} in {member.guild.name}")
+                    except Exception as e:
+                        logger.error(f"Error sending welcome message for {member}: {e}")
+            
+            # Log to server's logs channel if set
+            if row['logs_channel_id']:
+                log_channel = member.guild.get_channel(row['logs_channel_id'])
+                if log_channel:
+                    try:
+                        # Create member join log embed
+                        embed = discord.Embed(
+                            title="Member Joined",
+                            description=f"{member.mention} joined the server",
+                            color=discord.Color.green(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        
+                        # Add user information
+                        embed.add_field(name="User ID", value=member.id, inline=True)
+                        embed.add_field(name="Account Created", value=discord.utils.format_dt(member.created_at, style='R'), inline=True)
+                        
+                        # Check if account is new (less than 7 days old)
+                        account_age = (discord.utils.utcnow() - member.created_at).days
+                        if account_age < 7:
+                            embed.add_field(name="⚠️ New Account", value=f"Account created {account_age} days ago", inline=False)
+                        
+                        embed.set_thumbnail(url=member.display_avatar.url)
+                        embed.set_footer(text=f"Member #{member.guild.member_count}")
+                        
+                        await log_channel.send(embed=embed)
+                    except Exception as e:
+                        logger.error(f"Error sending join log for {member}: {e}")
+                        
     except Exception as e:
-        print(f"Error logging join for {member} in guild {member.guild.name}: {e}")
+        logger.error(f"Error processing member join for {member} in {member.guild.name}: {e}")
 
 # ------------------------------
 # Server Configuration Commands
@@ -711,6 +970,7 @@ async def avatar(interaction: discord.Interaction, user: discord.User = None):
 
 @bot.tree.command(name="help", description="Show help for FrostMod commands.")
 async def help_command(interaction: discord.Interaction):
+    """Display a comprehensive help menu with all available commands."""
     embed = discord.Embed(
         title="❄️ FrostMod Help Center",
         description="""
@@ -724,36 +984,47 @@ Welcome to **FrostMod**! Here are all the commands you can use.
     )
     embed.set_thumbnail(url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
 
-    admin_cmds = (
-        "🛡️ **/warn** `<user>` `<reason>`\nWarn a user and log the reason. Example: `/warn @User Spamming`.\n\n"
-        "🛡️ **/warns** `<user>`\nView all warnings for a user.\n\n"
-        "🛡️ **/delwarns** `<user>`\nDelete all warnings for a user.\n\n"
-        "🧹 **/purge** `<amount>`\nBulk delete messages (1-100) from this channel.\n\n"
-        "🧹 **/purgeuser** `<user>` `<amount>`\nDelete up to 100 messages from a specific user.\n\n"
-        "🛡️ **/mrole** `<role>`\nSet the moderator role for admin commands.\n\n"
-        "👋 **/welcome** `<channel>`\nSet the welcome channel.\n\n"
-        "💬 **/wmessage** `<message>`\nSet the welcome message. Use `{user}` and `{membercount}`.\n\n"
-        "🎉 **/bdaychannel** `<channel>`\nSet the birthday announcement channel.\n\n"
-        "📋 **/logschannel** `<channel>`\nSet the moderation logs channel.\n\n"
-        "🎭 **/joinrole** `<role>`\nAssign a role to new members."
+    # Server Configuration Commands
+    config_cmds = (
+        "⚙️ **/mrole** `<role>`\nSet the moderator role for admin commands.\n\n"
+        "🔍 **/filter** `<level>`\nSet chat filter level (light, moderate, strict).\n\n"
+        "👋 **/welcome** `<channel>`\nSet the welcome channel for new members.\n\n"
+        "💬 **/wmessage** `<message>`\nSet the welcome message. Use `{user}`, `{membercount}`, `{servername}`.\n\n"
+        "🎭 **/joinrole** `<role>`\nSet the role automatically assigned to new members.\n\n"
+        "📋 **/logschannel** `<channel>`\nSet the channel for event and moderation logs.\n\n"
+        "🎫 **/ticketchannel** `<channel>`\nSet the channel for ticket creation.\n\n"
+        "🎉 **/bdaychannel** `<channel>`\nSet the birthday announcement channel."
     )
 
+    # Moderation Commands
+    mod_cmds = (
+        "🛡️ **/warn** `<user>` `<reason>`\nWarn a user and log the reason.\n\n"
+        "🛡️ **/warns** `<user>`\nView all warnings for a specific user.\n\n"
+        "🛡️ **/delwarns** `<user>`\nDelete all warnings for a specific user.\n\n"
+        "🧹 **/purge** `<amount>`\nDelete up to 100 messages from the current channel.\n\n"
+        "🧹 **/purgeuser** `<user>` `<amount>`\nDelete up to 100 messages from a specific user."
+    )
+
+    # Birthday System Commands
     birthday_cmds = (
-        "🎂 **/setbirthday** `<mm/dd/yyyy>`\nSet your birthday for server birthday announcements.\n\n"
-        "🎉 **/testbirthdays**\n(Admin) Test birthday announcements for today.\n\n"
-        "🎂 **/delbday** `<user>`\nDelete a user's birthday. Users can delete their own; admins/mods can delete anyone's."
+        "🎂 **/setbirthday** `<mm/dd/yyyy>`\nSet your birthday for server announcements.\n\n"
+        "🎂 **/delbday** `<user>`\nDelete a birthday (users can delete their own; admins can delete any).\n\n"
+        "🎉 **/testbirthdays**\nTest birthday announcements for the current day."
     )
 
+    # Utility Commands
     util_cmds = (
         "🖼️ **/avatar** `[user]`\nShow a user's profile picture.\n\n"
-        "🆘 **/support**\nGet a link to the Frostline support Discord.\n\n"
-        "📈 **/status**\nShow the bot's ping and uptime.\n\n"
+        "📈 **/status**\nDisplay bot uptime and latency.\n\n"
+        "🆘 **/support**\nGet a link to the Frostline support server.\n\n"
         "❄️ **/help**\nShow this help message."
     )
 
-    embed.add_field(name="━━━━━━━━ 🛡️ Admin/Mod Commands ━━━━━━━━", value=admin_cmds, inline=False)
-    embed.add_field(name="━━━━━━━━ 🎂 Birthday Commands ━━━━━━━━", value=birthday_cmds, inline=False)
+    embed.add_field(name="━━━━━━━━ ⚙️ Server Configuration ━━━━━━━━", value=config_cmds, inline=False)
+    embed.add_field(name="━━━━━━━━ 🛡️ Moderation Tools ━━━━━━━━", value=mod_cmds, inline=False)
+    embed.add_field(name="━━━━━━━━ 🎂 Birthday System ━━━━━━━━", value=birthday_cmds, inline=False)
     embed.add_field(name="━━━━━━━━ 🔧 Utility Commands ━━━━━━━━", value=util_cmds, inline=False)
+    
     embed.set_footer(text="FrostMod • Need help? Use /support or join the support server!", icon_url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -774,7 +1045,8 @@ async def support(interaction: discord.Interaction):
 @app_commands.describe(amount="The number of messages to delete (1-100)")
 async def purge(interaction: discord.Interaction, amount: int):
     """Delete a specified number of messages from the channel. Admin only."""
-    if not is_admin(interaction):
+    # Fix: await the is_admin check
+    if not await is_admin(interaction):
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
         
@@ -800,8 +1072,8 @@ async def purge(interaction: discord.Interaction, amount: int):
                     to_delete.append(msg)
                 if len(to_delete) >= (amount - deleted_count):
                     break
+                    
             # Delete individually with delay to avoid rate limits
-            import logging
             for msg in to_delete:
                 try:
                     await msg.delete()
@@ -809,19 +1081,12 @@ async def purge(interaction: discord.Interaction, amount: int):
                     await asyncio.sleep(0.7)  # 700ms between deletes
                 except discord.errors.HTTPException as e:
                     if e.status == 429:
-                        retry_after = getattr(e, 'retry_after', None)
-                        if retry_after is None:
-                            # Try to parse from response if available
-                            retry_after = getattr(e.response, 'headers', {}).get('Retry-After')
-                            try:
-                                retry_after = float(retry_after)
-                            except (TypeError, ValueError):
-                                retry_after = 2.0  # fallback
-                        logging.warning(f"Rate limited while deleting message. Sleeping for {retry_after} seconds.")
+                        retry_after = getattr(e, 'retry_after', 2.0)
+                        logger.warning(f"Rate limited while deleting message. Sleeping for {retry_after} seconds.")
                         await asyncio.sleep(retry_after)
                         continue
                     else:
-                        logging.error(f"Failed to delete message: {e}")
+                        logger.error(f"Failed to delete message: {e}")
                         continue
 
         # Send confirmation
@@ -854,7 +1119,8 @@ async def purge(interaction: discord.Interaction, amount: int):
 )
 async def purgeuser(interaction: discord.Interaction, user: discord.Member, amount: int):
     """Delete a specified number of messages from a specific user in the channel. Admin only."""
-    if not is_admin(interaction):
+    # Fix: await the is_admin check
+    if not await is_admin(interaction):
         await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
         return
         
@@ -873,9 +1139,10 @@ async def purgeuser(interaction: discord.Interaction, user: discord.Member, amou
             
         # Delete messages from the specified user
         deleted = await interaction.channel.purge(limit=amount, check=check_user)
+        deleted_count = len(deleted)
         
         # Send confirmation
-        await interaction.followup.send(f"Successfully deleted {len(deleted)} messages from {user.mention}.", ephemeral=True)
+        await interaction.followup.send(f"Successfully deleted {deleted_count} messages from {user.mention}.", ephemeral=True)
         
         # Log to server's logs channel if set
         async with bot.db_pool.acquire() as conn:
@@ -885,7 +1152,7 @@ async def purgeuser(interaction: discord.Interaction, user: discord.Member, amou
             if log_channel:
                 embed = discord.Embed(
                     title="User Messages Purged",
-                    description=f"**Channel:** {interaction.channel.mention}\n**User:** {user.mention}\n**Amount:** {len(deleted)} messages\n**Moderator:** {interaction.user.mention}",
+                    description=f"**Channel:** {interaction.channel.mention}\n**User:** {user.mention}\n**Amount:** {deleted_count} messages\n**Moderator:** {interaction.user.mention}",
                     color=discord.Color.red(),
                     timestamp=discord.utils.utcnow()
                 )
@@ -895,98 +1162,217 @@ async def purgeuser(interaction: discord.Interaction, user: discord.Member, amou
     except discord.Forbidden:
         await interaction.followup.send("I don't have permission to delete messages in this channel.", ephemeral=True)
     except discord.HTTPException as e:
+        logger.error(f"Error in purgeuser command: {e}")
         await interaction.followup.send(f"An error occurred while purging messages: {e}", ephemeral=True)
 
 @bot.event
 async def on_member_remove(member):
-    # Log member leave
+    """Handle member leave events - log to database and send leave messages."""
+    logger.info(f"Member left: {member} ({member.id}) from guild {member.guild.name} ({member.guild.id})")
+    
     try:
+        # Get join date if available
+        join_date = None
+        join_duration = None
+        
+        try:
+            async with bot.db_pool.acquire() as conn:
+                # Log the leave in database
+                await conn.execute('''
+                    INSERT INTO user_leaves (guild_id, user_id, username, left_at)
+                    VALUES ($1, $2, $3, $4)
+                ''', member.guild.id, member.id, str(member), discord.utils.utcnow())
+                
+                # Get join date if available
+                join_row = await conn.fetchrow('''
+                    SELECT joined_at FROM user_joins 
+                    WHERE guild_id = $1 AND user_id = $2
+                ''', member.guild.id, member.id)
+                
+                if join_row and join_row['joined_at']:
+                    join_date = join_row['joined_at']
+                    join_duration = discord.utils.utcnow() - join_date
+        except Exception as e:
+            logger.error(f"Error logging member leave to database: {e}")
+        
+        # Send leave message to logs channel
         async with bot.db_pool.acquire() as conn:
             row = await conn.fetchrow('''SELECT logs_channel_id FROM servers WHERE guild_id = $1''', member.guild.id)
+            
         if row and row['logs_channel_id']:
-            channel = member.guild.get_channel(row['logs_channel_id'])
-            if channel:
-                embed = discord.Embed(description=f"{member.mention} has left the server.", color=discord.Color.red())
-                embed.set_author(name=member.guild.name)
-                await channel.send(embed=embed)
+            log_channel = member.guild.get_channel(row['logs_channel_id'])
+            if log_channel:
+                try:
+                    # Create member leave log embed
+                    embed = discord.Embed(
+                        title="Member Left",
+                        description=f"{member.mention} has left the server",
+                        color=discord.Color.red(),
+                        timestamp=discord.utils.utcnow()
+                    )
+                    
+                    # Add user information
+                    embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
+                    
+                    # Add join date and duration if available
+                    if join_date:
+                        embed.add_field(name="Joined", value=discord.utils.format_dt(join_date, style='R'), inline=True)
+                        
+                    if join_duration:
+                        days = join_duration.days
+                        hours, remainder = divmod(join_duration.seconds, 3600)
+                        minutes, _ = divmod(remainder, 60)
+                        
+                        duration_str = ""
+                        if days > 0:
+                            duration_str += f"{days} days, "
+                        if hours > 0 or days > 0:
+                            duration_str += f"{hours} hours, "
+                        duration_str += f"{minutes} minutes"
+                        
+                        embed.add_field(name="Member For", value=duration_str, inline=True)
+                    
+                    embed.set_thumbnail(url=member.display_avatar.url)
+                    
+                    await log_channel.send(embed=embed)
+                except Exception as e:
+                    logger.error(f"Error sending leave message: {e}")
     except Exception as e:
-        print(f"Error logging member leave: {e}")
+        logger.error(f"Error processing member leave for {member} in {member.guild.name}: {e}")
 
 @bot.event
 async def on_guild_channel_create(channel):
-    # Log channel creation with executor
+    """Log channel creation events to the server's logs channel."""
+    # Skip if not a guild channel
     if not hasattr(channel, 'guild'):
         return
+        
     try:
+        # Get the logs channel for this guild
         async with bot.db_pool.acquire() as conn:
             row = await conn.fetchrow('''SELECT logs_channel_id FROM servers WHERE guild_id = $1''', channel.guild.id)
-        if row and row['logs_channel_id']:
-            log_channel = channel.guild.get_channel(row['logs_channel_id'])
-            if log_channel:
-                # Try to get the user who created the channel from audit logs
-                executor = None
-                async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_create):
-                    if entry.target.id == channel.id:
-                        executor = entry.user
-                        break
-                embed = discord.Embed(
-                    title="Channel Created",
-                    description=f"**Channel:** {channel.mention}",
-                    color=discord.Color.blue(),
-                    timestamp=discord.utils.utcnow()
-                )
-                if executor:
-                    embed.add_field(name="Created by", value=f"{executor} ({executor.id})", inline=True)
-                    embed.set_thumbnail(url=executor.display_avatar.url)
-                else:
-                    embed.add_field(name="Created by", value="Unknown", inline=True)
-                embed.set_author(name=channel.guild.name, icon_url=channel.guild.icon.url if channel.guild.icon else discord.Embed.Empty)
-                await log_channel.send(embed=embed)
+            
+        if not row or not row['logs_channel_id']:
+            return
+            
+        log_channel = channel.guild.get_channel(row['logs_channel_id'])
+        if not log_channel:
+            return
+            
+        # Try to get the user who created the channel from audit logs
+        executor = None
+        try:
+            async for entry in channel.guild.audit_logs(limit=5, action=discord.AuditLogAction.channel_create):
+                if entry.target.id == channel.id:
+                    executor = entry.user
+                    break
+        except Exception as e:
+            logger.error(f"Error fetching audit logs for channel creation: {e}")
+            
+        # Create the embed with channel information
+        embed = discord.Embed(
+            title="Channel Created",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        # Add channel details based on type
+        channel_type = str(channel.type).replace('_', ' ').title()
+        embed.add_field(name="Channel", value=f"{channel.mention} (`{channel.name}`)", inline=False)
+        embed.add_field(name="Type", value=channel_type, inline=True)
+        
+        # Add category if applicable
+        if hasattr(channel, 'category') and channel.category:
+            embed.add_field(name="Category", value=channel.category.name, inline=True)
+            
+        # Add executor information if available
+        if executor:
+            embed.add_field(name="Created By", value=f"{executor.mention} ({executor.id})", inline=False)
+            embed.set_thumbnail(url=executor.display_avatar.url)
+        else:
+            embed.add_field(name="Created By", value="Unknown", inline=False)
+            
+        embed.set_author(name=channel.guild.name, icon_url=channel.guild.icon.url if channel.guild.icon else discord.Embed.Empty)
+        embed.set_footer(text=f"Channel ID: {channel.id}")
+        
+        await log_channel.send(embed=embed)
+        logger.info(f"Logged channel creation: {channel.name} in {channel.guild.name}")
     except Exception as e:
-        print(f"Error logging channel creation: {e}")
+        logger.error(f"Error logging channel creation for {channel.name} in {channel.guild.name}: {e}")
 
 @bot.event
 async def on_guild_channel_delete(channel):
-    # Log channel deletion with executor
+    """Log channel deletion events to the server's logs channel."""
+    # Skip if not a guild channel
     if not hasattr(channel, 'guild'):
         return
+        
     try:
+        # Get the logs channel for this guild
         async with bot.db_pool.acquire() as conn:
             row = await conn.fetchrow('''SELECT logs_channel_id FROM servers WHERE guild_id = $1''', channel.guild.id)
-        if row and row['logs_channel_id']:
-            log_channel = channel.guild.get_channel(row['logs_channel_id'])
-            if log_channel:
-                # Try to get the user who deleted the channel from audit logs
-                executor = None
-                async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete):
-                    if entry.target.id == channel.id:
-                        executor = entry.user
-                        break
-                embed = discord.Embed(
-                    title="Channel Deleted",
-                    description=f"**Channel:** #{channel.name}",
-                    color=discord.Color.orange(),
-                    timestamp=discord.utils.utcnow()
-                )
-                if executor:
-                    embed.add_field(name="Deleted by", value=f"{executor} ({executor.id})", inline=True)
-                    embed.set_thumbnail(url=executor.display_avatar.url)
-                else:
-                    embed.add_field(name="Deleted by", value="Unknown", inline=True)
-                embed.set_author(name=channel.guild.name, icon_url=channel.guild.icon.url if channel.guild.icon else discord.Embed.Empty)
-                await log_channel.send(embed=embed)
+            
+        if not row or not row['logs_channel_id']:
+            return
+            
+        log_channel = channel.guild.get_channel(row['logs_channel_id'])
+        if not log_channel:
+            return
+            
+        # Try to get the user who deleted the channel from audit logs
+        executor = None
+        try:
+            async for entry in channel.guild.audit_logs(limit=5, action=discord.AuditLogAction.channel_delete):
+                if entry.target.id == channel.id:
+                    executor = entry.user
+                    break
+        except Exception as e:
+            logger.error(f"Error fetching audit logs for channel deletion: {e}")
+            
+        # Create the embed with channel information
+        embed = discord.Embed(
+            title="Channel Deleted",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        # Add channel details
+        channel_type = str(channel.type).replace('_', ' ').title()
+        embed.add_field(name="Channel Name", value=f"#{channel.name}", inline=False)
+        embed.add_field(name="Channel ID", value=channel.id, inline=True)
+        embed.add_field(name="Type", value=channel_type, inline=True)
+        
+        # Add category if applicable
+        if hasattr(channel, 'category') and channel.category:
+            embed.add_field(name="Category", value=channel.category.name, inline=True)
+            
+        # Add executor information if available
+        if executor:
+            embed.add_field(name="Deleted By", value=f"{executor.mention} ({executor.id})", inline=False)
+            embed.set_thumbnail(url=executor.display_avatar.url)
+        else:
+            embed.add_field(name="Deleted By", value="Unknown", inline=False)
+            
+        embed.set_author(name=channel.guild.name, icon_url=channel.guild.icon.url if channel.guild.icon else discord.Embed.Empty)
+        
+        await log_channel.send(embed=embed)
+        logger.info(f"Logged channel deletion: {channel.name} in {channel.guild.name}")
     except Exception as e:
-        print(f"Error logging channel deletion: {e}")
+        logger.error(f"Error logging channel deletion for {channel.name} in {channel.guild.name}: {e}")
 
 @bot.event
 async def on_user_update(before, after):
+    """Log user profile changes (username, avatar) to all servers the user is in."""
     # Check if username or avatar changed
     username_changed = before.name != after.name
     avatar_changed = before.avatar != after.avatar
+    discriminator_changed = before.discriminator != after.discriminator
     
     # Only proceed if something changed
-    if not (username_changed or avatar_changed):
+    if not (username_changed or avatar_changed or discriminator_changed):
         return
+        
+    logger.info(f"User updated: {before} -> {after}")
     
     # Log changes to all servers this user is in
     for guild in bot.guilds:
@@ -1000,106 +1386,135 @@ async def on_user_update(before, after):
             async with bot.db_pool.acquire() as conn:
                 row = await conn.fetchrow('''SELECT logs_channel_id FROM servers WHERE guild_id = $1''', guild.id)
             
-            if row and row['logs_channel_id']:
-                log_channel = guild.get_channel(row['logs_channel_id'])
-                if log_channel:
-                    # Create embed for the change
-                    embed = discord.Embed(
-                        title="User Updated",
-                        color=discord.Color.blue(),
-                        timestamp=discord.utils.utcnow()
-                    )
-                    embed.set_author(name=f"{after}", icon_url=after.display_avatar.url)
-                    
-                    # Add fields based on what changed
-                    if username_changed:
-                        embed.add_field(name="Username Changed", value=f"**Before:** {before.name}\n**After:** {after.name}", inline=False)
-                    
-                    if avatar_changed:
-                        embed.add_field(name="Avatar Changed", value="User updated their profile picture", inline=False)
-                        if before.avatar:
-                            embed.set_thumbnail(url=before.avatar.url)
-                        embed.set_image(url=after.display_avatar.url)
-                    
-                    # Send the embed to the logs channel
-                    await log_channel.send(embed=embed)
+            if not row or not row['logs_channel_id']:
+                continue
+                
+            log_channel = guild.get_channel(row['logs_channel_id'])
+            if not log_channel:
+                continue
+                
+            # Create embed for the change
+            embed = discord.Embed(
+                title="User Profile Updated",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            # Set author with new username and avatar
+            embed.set_author(name=str(after), icon_url=after.display_avatar.url)
+            
+            # Add user ID field
+            embed.add_field(name="User ID", value=after.id, inline=False)
+            
+            # Add fields based on what changed
+            changes = []
+            
+            if username_changed:
+                embed.add_field(
+                    name="Username Changed", 
+                    value=f"**Before:** {before.name}\n**After:** {after.name}", 
+                    inline=False
+                )
+                changes.append("username")
+            
+            if discriminator_changed and before.discriminator != '0' and after.discriminator != '0':
+                embed.add_field(
+                    name="Discriminator Changed", 
+                    value=f"**Before:** #{before.discriminator}\n**After:** #{after.discriminator}", 
+                    inline=False
+                )
+                changes.append("discriminator")
+            
+            if avatar_changed:
+                embed.add_field(
+                    name="Avatar Changed", 
+                    value="User updated their profile picture", 
+                    inline=False
+                )
+                changes.append("avatar")
+                
+                # Show before and after avatars if available
+                if before.avatar:
+                    embed.set_thumbnail(url=before.avatar.url)
+                embed.set_image(url=after.display_avatar.url)
+            
+            # Set footer with summary of changes
+            embed.set_footer(text=f"Changed: {', '.join(changes)}")
+            
+            # Send the embed to the logs channel
+            await log_channel.send(embed=embed)
+            logger.info(f"Logged user update for {after} in {guild.name}")
+            
         except Exception as e:
-            print(f"Error logging user update: {e}")
+            logger.error(f"Error logging user update for {after} in {guild.name}: {e}")
 
-# Persistent views for ticket buttons
+# This duplicate on_ready event has been removed and merged with the one above
+
 @bot.event
-async def on_ready():
-    print("Bot is ready. Starting status rotation.")
-    bot.loop.create_task(rotate_status())
-    bot.loop.create_task(daily_birthday_check())
-    
-    # Add persistent view for ticket buttons
-    bot.add_view(TicketButton())
-    
-    # Initialize database tables if they don't exist
+async def on_message(message):
+    # Skip processing for bot messages or DMs
+    if message.author.bot or not message.guild:
+        return
+        
     try:
-        async with bot.db_pool.acquire() as conn:
-            # Create servers table if it doesn't exist
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS servers (
-                    guild_id BIGINT PRIMARY KEY,
-                    welcome_channel_id BIGINT,
-                    welcome_message TEXT,
-                    join_role_id BIGINT,
-                    logs_channel_id BIGINT,
-                    mod_role_id BIGINT,
-                    birthday_channel_id BIGINT,
-                    ticket_channel_id BIGINT
+        # Check message against filter
+        filter_level = await get_filter_level(message.guild.id)
+        blocked, reason = check_message_for_filter(message.content, filter_level)
+        
+        if blocked:
+            # Try to delete the message
+            try:
+                await message.delete()
+                await message.channel.send(
+                    f"{message.author.mention}, your message was deleted because you used a banned word and have been warned. 3 or more warnings may lead to disciplinary action.",
+                    delete_after=7
                 )
-            ''')
-            
-            # Create warnings table if it doesn't exist
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS warnings (
-                    id SERIAL PRIMARY KEY,
-                    guild_id BIGINT,
-                    user_id BIGINT,
-                    moderator_id BIGINT,
-                    reason TEXT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Create birthdays table if it doesn't exist
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS birthdays (
-                    id SERIAL PRIMARY KEY,
-                    guild_id BIGINT,
-                    user_id BIGINT,
-                    birthday DATE,
-                    UNIQUE(guild_id, user_id)
-                )
-            ''')
-            
-            # Create tickets table if it doesn't exist
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS tickets (
-                    ticket_id SERIAL PRIMARY KEY,
-                    guild_id BIGINT NOT NULL,
-                    guild_name VARCHAR(100) NOT NULL,
-                    created_by_id BIGINT NOT NULL,
-                    created_by_username VARCHAR(100) NOT NULL,
-                    closed_by_id BIGINT,
-                    closed_by_username VARCHAR(100),
-                    channel_id BIGINT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    closed_at TIMESTAMP,
-                    status VARCHAR(20) DEFAULT 'open'
-                )
-            ''')
-            
-            # Create indexes for faster lookups
-            await conn.execute('CREATE INDEX IF NOT EXISTS idx_tickets_guild_id ON tickets(guild_id)')
-            await conn.execute('CREATE INDEX IF NOT EXISTS idx_tickets_created_by_id ON tickets(created_by_id)')
-            
-            print("Database tables initialized successfully!")
+            except Exception as e:
+                logger.error(f"Could not delete filtered message: {e}")
+                
+            # Auto-warn user for filtered word
+            try:
+                # Add warning to database
+                async with bot.db_pool.acquire() as conn:
+                    await conn.execute(
+                        '''INSERT INTO warns (guild_id, guild_name, user_id, username, reason) VALUES ($1, $2, $3, $4, $5)''',
+                        message.guild.id,
+                        message.guild.name,
+                        message.author.id,
+                        message.author.name,
+                        f"Automatic warning: Used banned word in message."
+                    )
+                logger.info(f"Auto-warned {message.author} ({message.author.id}) in guild {message.guild.name} for filtered word")
+                
+                # Log to server's logs channel if set
+                async with bot.db_pool.acquire() as conn:
+                    row = await conn.fetchrow('''SELECT logs_channel_id FROM servers WHERE guild_id = $1''', message.guild.id)
+                if row and row['logs_channel_id']:
+                    log_channel = message.guild.get_channel(row['logs_channel_id'])
+                    if log_channel:
+                        embed = discord.Embed(
+                            title="Message Filtered",
+                            description=f"**User:** {message.author.mention}\n**Channel:** {message.channel.mention}\n**Filter Level:** {filter_level}",
+                            color=discord.Color.orange(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        embed.set_author(name=message.guild.name, icon_url=message.guild.icon.url if message.guild.icon else discord.Embed.Empty)
+                        embed.set_thumbnail(url=message.author.display_avatar.url)
+                        await log_channel.send(embed=embed)
+                
+                # Notify the user via DM
+                try:
+                    await message.author.send(f"You have been automatically warned in **{message.guild.name}** for using a banned word.")
+                except Exception:
+                    # If DM fails, send in channel
+                    await message.channel.send(f"{message.author.mention}, you have been automatically warned for using a banned word.", delete_after=10)
+            except Exception as e:
+                logger.error(f"Could not auto-warn user: {e}")
+        else:
+            # Process commands if message wasn't filtered
+            await bot.process_commands(message)
     except Exception as e:
-        print(f"Error initializing database tables: {e}")
+        logger.error(f"Error in on_message event: {e}")
 
 if __name__ == "__main__":
     bot.run(TOKEN)

@@ -3,45 +3,94 @@
 FrostMod V2 is a powerful, scalable Discord moderation bot built for Frostline Solutions. It provides advanced moderation, onboarding, logging, and a branded ticketing system for support. Data is stored securely in PostgreSQL.
 
 ## Features
-- **Welcome System**: Greet new members with a customizable message (supports `{user}` and `{membercount}` placeholders).
-- **Automatic Join Role**: Assign a role to new members automatically.
-- **Moderation Tools**: Warn users, purge messages (by user or count), and manage infractions.
-- **Logging System**: Log server events (channel creation/deletion, member joins/leaves, username/avatar changes) to a designated channel with branded embeds.
-- **Ticketing System**: Branded Frostline ticket system with `/ticketchannel` setup, "Open Ticket" button, private ticket channels, and database tracking.
-- **Birthday System**: Announce user birthdays in a dedicated channel.
-- **Slash Commands**: Modern, easy-to-use Discord slash commands for all features.
+
+### Moderation & Security
+- **Advanced Chat Filter**: Three-tiered word filter system (light, moderate, strict) with automatic warnings
+- **Warning System**: Track and manage user infractions with `/warn`, `/warns`, and `/delwarns` commands
+- **Message Purging**: Bulk delete messages with `/purge` and `/purgeuser` commands
+- **Permission System**: Flexible admin/mod role system with server-specific configuration
+- **Detailed Logging**: Comprehensive event logging for all moderation actions
+
+### Member Management
+- **Welcome System**: Customizable welcome messages with placeholders (`{user}`, `{membercount}`, `{servername}`)
+- **Auto-Role**: Automatically assign roles to new members
+- **Birthday System**: Track and announce member birthdays
+- **Account Monitoring**: Flag new accounts and track join/leave patterns
+
+### Server Management
+- **Event Logging**: Track channel creation/deletion, member joins/leaves, username/avatar changes
+- **Audit Integration**: Detailed logs with executor tracking for server events
+- **Server Configuration**: Easy setup with dedicated commands for each feature
+
+### Support System
+- **Ticketing System**: Branded Frostline ticket system with private channels
+- **Ticket Tracking**: All ticket actions are logged in the database for auditing
+- **User-Friendly Interface**: Clean embeds and intuitive button interactions
+
+### Technical Features
+- **Slash Commands**: Modern Discord interaction system
+- **PostgreSQL Database**: Reliable data storage for all bot features
+- **Robust Error Handling**: Comprehensive logging and error recovery
+- **Performance Optimized**: Efficient resource usage and API call management
 
 ## Ticketing System
-- **/ticketchannel <channel>** — Admins set the ticket creation channel. The bot posts a branded embed with an "Open Ticket" button.
-- **Open Ticket Button** — Users open a private support channel, visible only to them and staff.
-- **Ticket Management** — Staff and the user can close tickets. Channels are deleted after closing, and all ticket actions are tracked in the database for auditing.
+- **/ticketchannel <channel>** — Admins set the ticket creation channel with a branded embed and "Open Ticket" button
+- **Private Channels**: Each ticket creates a dedicated channel visible only to the user and staff
+- **Ticket Management**: Both staff and the ticket creator can close tickets
+- **Automatic Cleanup**: Channels are deleted after closing to keep the server organized
 
 ## Commands
 
-### Admin/Mod Commands
-- **/ticketchannel <channel>** — Set the channel for ticket creation (admins only)
-- **/mrole <role>** — Set the moderator role for admin commands (admins only)
-- **/welcome <channel>** — Set the welcome channel
-- **/wmessage <message>** — Set the welcome message
-- **/joinrole <role>** — Set the auto-join role
-- **/logschannel <channel>** — Set the logs channel
-- **/bdaychannel <channel>** — Set the birthday announcements channel
-- **/warn <user> <reason>** — Warn a user with a reason (logs to logs channel if set)
-- **/warns <user>** — List all warnings for a user
-- **/delwarns <user>** — Delete all warnings for a user
-- **/purge <amount>** — Delete a specified number of messages (1-100) from the current channel
-- **/purgeuser <user> <amount>** — Delete a specified number of messages (1-100) from a specific user in the current channel
-- **/testbirthdays** — Test birthday announcements for today
-- **/delbday <user>** — Delete a user's birthday (users can only delete their own, admins/mods can delete any)
+### Server Configuration
+- **/mrole <role>** — Set the moderator role for admin commands
+- **/filter <level>** — Set chat filter level (light, moderate, strict)
+- **/welcome <channel>** — Set the welcome channel for new members
+- **/wmessage <message>** — Set the welcome message with placeholders: `{user}`, `{membercount}`, `{servername}`
+- **/joinrole <role>** — Set the role automatically assigned to new members
+- **/logschannel <channel>** — Set the channel for event and moderation logs
+- **/ticketchannel <channel>** — Set the channel for ticket creation
+- **/bdaychannel <channel>** — Set the channel for birthday announcements
 
-*All above commands require Administrator permission or the server's mod role (set with /mrole), unless otherwise noted.*
+### Moderation Tools
+- **/warn <user> <reason>** — Warn a user and log the reason
+- **/warns <user>** — View all warnings for a specific user
+- **/delwarns <user>** — Delete all warnings for a specific user
+- **/purge <amount>** — Delete up to 100 messages from the current channel
+- **/purgeuser <user> <amount>** — Delete up to 100 messages from a specific user
 
-### Birthday Commands
-- **/setbirthday mm/dd/yyyy** — Set your own birthday for birthday announcements
+### Birthday System
+- **/setbirthday <mm/dd/yyyy>** — Set your birthday for server announcements
+- **/delbday <user>** — Delete a birthday (users can delete their own; admins can delete any)
+- **/testbirthdays** — Test birthday announcements for the current day
 
 ### Utility Commands
-- **/avatar [user]** — Show a user's profile picture (avatar)
-- **/support** — Get bot support from the Frostline development team
-- **/help** — Show this help message
-- **/status** — Show bot ping and uptime
+- **/avatar [user]** — Show a user's profile picture
+- **/status** — Display bot uptime and latency
+- **/support** — Get a link to the Frostline support server
+- **/help** — Show all available commands
 
+*All configuration and moderation commands require Administrator permission or the server's mod role (set with /mrole).*
+
+## Permissions
+
+FrostMod requires the following permissions to function properly:
+- **Administrator** or the following specific permissions:
+  - Manage Roles (for join roles)
+  - Manage Channels (for ticket creation/deletion)
+  - Manage Messages (for message filtering and purging)
+  - View Channels & Send Messages (for all commands)
+  - Embed Links (for rich embeds)
+  - Read Message History (for purge commands)
+  - Use External Emojis (for better UI)
+  - Add Reactions (for interactive features)
+
+## Setup Guide
+
+1. **Invite the bot** to your server with the required permissions
+2. **Set up logging** with `/logschannel #your-logs-channel`
+3. **Configure moderation** with `/mrole @Your-Mod-Role` and `/filter moderate`
+4. **Set up welcome system** with `/welcome #welcome-channel` and `/wmessage Welcome {user} to {servername}!`
+5. **Enable tickets** with `/ticketchannel #support-channel`
+6. **Set up birthdays** with `/bdaychannel #birthdays-channel`
+
+Once configured, all features will be active and ready to use!
