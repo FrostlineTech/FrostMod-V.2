@@ -32,7 +32,7 @@ OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
-intents.presences = True  # Enable presence intents to see member statuses
+intents.presences = True  # Required for accurate status detection
 
 # FrostModBot definition
 class FrostModBot(commands.Bot):
