@@ -3,9 +3,6 @@ import discord
 import asyncio
 import logging
 import datetime
-import time
-import socket
-import requests
 from itertools import cycle
 from collections import defaultdict
 from discord import app_commands, ui
@@ -41,34 +38,17 @@ class FrostModBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents, application_id=None)
         self.db_pool = None
-        # Store bot start time as UTC datetime
+        # Store bot start time in Texas timezone (Central Time)
         import datetime
-        # Record actual start time when bot initializes
-        self.start_time = datetime.datetime.now(datetime.timezone.utc)
-        # Get and store host server location for ping calculations
-        self.host_location = self.get_host_location()
+        import pytz
+        
+        # Define Texas timezone (Central Time)
+        texas_tz = pytz.timezone('America/Chicago')
+        
+        # Record actual start time when bot initializes in Texas timezone
+        utc_now = datetime.datetime.now(datetime.timezone.utc)
+        self.start_time = utc_now.astimezone(texas_tz)
 
-    def get_host_location(self):
-        """Get coordinates for geographic ping calculation (privacy-focused)."""
-        try:
-            # Using pre-defined regional server coordinates instead of actual host location
-            # This way we don't expose any private information
-            host_region = {
-                # Using a generic coordinate for calculations (US Central)
-                'region_name': 'Server Region',
-                'loc': '39.8283,-98.5795',  # Geographic center of the United States
-                'privacy_mode': True
-            }
-            logger.info(f"Using privacy mode for geographic calculations")
-            return host_region
-        except Exception as e:
-            logger.error(f"Failed to set up geographic calculations: {e}")
-            return {
-                'region_name': 'Server Region',
-                'loc': '0,0',
-                'privacy_mode': True
-            }
-    
     async def setup_hook(self):
         # Register slash commands globally
         await self.tree.sync()
@@ -194,17 +174,28 @@ async def rotate_status():
 # Words are stored in lowercase for case-insensitive matching
 STRICT_WORDS = {
     # General profanity, mild offensive terms
-    "fuck", "shit", "bitch", "fck", "whore", "ass", "damn", "bastard"
+    "fuck", "shit", "bitch", "fck", "whore", "ass", "damn", "bastard", 
+    "asshole", "crap", "piss", "dick", "cock", "pussy", "vagina", "anal", 
+    "butthole", "blowjob", "handjob", "rimjob", "booty", "tits", "titties", 
+    "boob", "boobs", "penis", "cumshot", "bj", "wank", "jizz", "cum", "masturbate",
+    "fuk", "motherfucker", "fucker", "bullshit", "bs", "stfu", "milf", "dilf"
 }
 
 MODERATE_WORDS = {
     # More severe offensive terms and slurs
-    "nigger", "wetback", "tranny", "rape", "cuck", "slut", "faggot"
+    "nigger", "wetback", "tranny", "rape", "cuck", "slut", "faggot", 
+    "nazi", "dyke", "queer", "gay", "homo", "pedo", "pedophile", "loli", 
+    "terrorist", "hitler", "kkk", "suicide", "kill yourself", "kys", "neck yourself", 
+    "cancer", "beaner", "gook", "tard", "jew", "zipperhead", "inbred", 
+    "incel", "simp", "whitetrash", "molest", "orgy", "gangbang"
 }
 
 LIGHT_WORDS = {
     # Most severe hate speech and slurs
-    "nigger", "kike", "chink", "retard", "spic"
+    "nigger", "kike", "chink", "retard", "spic", "nigga", "fag", "faggot", "coon", 
+    "monkey", "n1gg3r", "k1k3", "ch1nk", "r3tard", "sp1c", "n1gga", "f4g", "f4gg0t", 
+    "c00n", "m0nk3y", "negro", "rape", "jap", "mong", "paki", "mongoloid", "towelhead", 
+    "jihad", "goatfucker", "sandnigger", "beaner", "cracker", "guido", "gypsy"
 }
 
 # Convert all words to lowercase for case-insensitive matching
@@ -695,29 +686,34 @@ async def create_new_ticket(interaction):
         await interaction.followup.send(f"Error creating ticket: {e}", ephemeral=True)
 
 # --- Utility Commands ---
-@bot.tree.command(name="status", description="Show bot ping and uptime information.")
+@bot.tree.command(name="status", description="Show bot ping, server ping, and uptime with accurate measurements.")
 async def status(interaction: discord.Interaction):
-    """Show bot ping and uptime information."""
+    """Show bot ping, server ping, and uptime with accurate measurements."""
     import datetime
     import time
+    import asyncio
+    import socket
     
-    # Start performance measurement
-    start_time = time.perf_counter()
+    # Start by deferring the response so we don't timeout
     await interaction.response.defer(ephemeral=True)
+    
+    # More accurate ping calculation using round-trip time
+    start_time = time.perf_counter()
+    # Make a test API request
+    await bot.http.request(discord.http.Route("GET", "/users/@me"))
     end_time = time.perf_counter()
-    ping = round((end_time - start_time) * 1000)  # More accurate ping in ms
+    api_ping = round((end_time - start_time) * 1000)  # API ping in ms
     
-    # Add WebSocket latency as well for comparison
-    ws_ping = round(bot.latency * 1000)
+    # Get WebSocket latency for comparison
+    ws_ping = round(bot.latency * 1000)  # WebSocket ping in ms
     
-    # Get user's approximate location based on their IP
-    user_location = await get_user_location(interaction)
+    # Server ping calculation using socket connection
+    server_ping = await get_discord_server_ping()
     
-    # Calculate geographic-based ping estimate
-    geo_ping = calculate_geographic_ping(bot.host_location, user_location)
-    
-    # Uptime calculation
-    now = datetime.datetime.now(datetime.timezone.utc)
+    # Uptime calculation using Texas timezone (Central Time)
+    import pytz
+    texas_tz = pytz.timezone('America/Chicago')
+    now = datetime.datetime.now(datetime.timezone.utc).astimezone(texas_tz)
     delta = now - bot.start_time
     days = delta.days
     hours, remainder = divmod(delta.seconds, 3600)
@@ -732,106 +728,50 @@ async def status(interaction: discord.Interaction):
     )
     
     # Connection info
-    embed.add_field(name="API Ping", value=f"{ping} ms", inline=True)
-    embed.add_field(name="WebSocket Ping", value=f"{ws_ping} ms", inline=True)
-    embed.add_field(name="Geographic Ping", value=f"{geo_ping} ms", inline=True)
+    embed.add_field(name="API Ping", value=f"{api_ping} ms", inline=True)
+    embed.add_field(name="WS Ping", value=f"{ws_ping} ms", inline=True)
+    embed.add_field(name="Server Ping", value=f"{server_ping} ms", inline=True)
     
     # Bot info
-    embed.add_field(name="Uptime", value=uptime, inline=True)
-    embed.add_field(name="Your Region", value=f"{user_location['region_name']}", inline=True)
+    embed.add_field(name="Uptime", value=uptime, inline=False)
     
-    embed.set_footer(text=f"Bot started: {bot.start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    # Add the bot start time in the footer (Texas time)
+    embed.set_footer(text=f"Bot started: {bot.start_time.strftime('%Y-%m-%d %H:%M:%S')} CT")
     
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-async def get_user_location(interaction):
-    """Get approximate location data for a user based on Discord's region."""
-    try:
-        # Get the guild's region from the voice region or use the interaction
-        guild = interaction.guild
-        
-        # Try to get region from guild (Discord now uses automatic region selection)
-        # As a fallback we'll use the shard ID to estimate the region
-        shard_id = guild.shard_id if guild else 0
-        
-        # Use discord's API endpoints and regions
-        regions = {
-            0: {'name': 'US West', 'region_name': 'Western US', 'lat': 37.7749, 'lon': -122.4194},  # San Francisco
-            1: {'name': 'US East', 'region_name': 'Eastern US', 'lat': 40.7128, 'lon': -74.0060},      # New York
-            2: {'name': 'EU Central', 'region_name': 'Central Europe', 'lat': 50.1109, 'lon': 8.6821}, # Frankfurt
-            3: {'name': 'EU West', 'region_name': 'Western Europe', 'lat': 51.5074, 'lon': -0.1278},   # London
-            4: {'name': 'Brazil', 'region_name': 'Brazil', 'lat': -23.5505, 'lon': -46.6333},          # São Paulo
-            5: {'name': 'Japan', 'region_name': 'Japan', 'lat': 35.6762, 'lon': 139.6503},             # Tokyo
-            6: {'name': 'Australia', 'region_name': 'Australia', 'lat': -33.8688, 'lon': 151.2093},     # Sydney
-            7: {'name': 'Singapore', 'region_name': 'Southeast Asia', 'lat': 1.3521, 'lon': 103.8198},  # Singapore
-        }
-        
-        # Get region info based on shard ID or default to US West
-        region_info = regions.get(shard_id % 8, regions[0])
-        
-        # Calculate regional distance for ping estimation (no actual locations exposed)
-        if bot.host_location.get('loc', '0,0') != '0,0':
-            try:
-                host_lat, host_lon = map(float, bot.host_location['loc'].split(','))
-                # Just calculate the distance without showing it in the UI
-                distance_km = calculate_distance(
-                    host_lat, host_lon, 
-                    region_info['lat'], region_info['lon']
-                )
-                region_info['distance_km'] = round(distance_km, 2)
-                # We won't display this, just use it for ping calculation
-            except Exception as e:
-                logger.error(f"Error in geographic calculations: {e}")
-        
-        return region_info
-        
-    except Exception as e:
-        logger.error(f"Failed to get user location: {e}")
-        return {'name': 'Unknown', 'region_name': 'Unknown Region'}
-
-def calculate_distance(lat1, lon1, lat2, lon2):
-    """Calculate the great-circle distance between two points on Earth."""
-    from math import radians, sin, cos, sqrt, atan2
+# Function to measure server ping - not a command
+async def get_discord_server_ping():
+    """Measure ping to Discord's servers using TCP socket connection."""
+    import socket
+    import time
+    import asyncio
     
-    # Convert latitude and longitude from degrees to radians
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    # Discord server hostnames to ping (we'll use the main gateway)
+    # Possible servers: gateway.discord.gg, discord.com, media.discordapp.net
+    hostnames = ['discord.com', 'gateway.discord.gg']
+    ping_times = []
     
-    # Haversine formula
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    # Run ping tests asynchronously
+    for hostname in hostnames:
+        try:
+            # We'll run this in a thread pool since socket operations are blocking
+            start = time.time()
+            # Open a socket to Discord's server on port 443 (HTTPS)
+            # This is a non-blocking way to check server response
+            future = asyncio.get_event_loop().run_in_executor(None, lambda: 
+                socket.create_connection((hostname, 443), timeout=5)
+            )
+            socket_obj = await asyncio.wait_for(future, timeout=5)
+            socket_obj.close()  # Close the socket immediately after connection
+            end = time.time()
+            ping_time = round((end - start) * 1000)  # Convert to ms
+            ping_times.append(ping_time)
+        except Exception as e:
+            logger.error(f"Error pinging {hostname}: {e}")
     
-    # Earth's radius in kilometers
-    radius = 6371
-    distance = radius * c
-    
-    return distance
-
-def calculate_geographic_ping(host_location, user_location):
-    """Calculate an estimated ping based on geographic distance."""
-    try:
-        # Get distance if available
-        distance_km = user_location.get('distance_km', 0)
-        
-        if distance_km > 0:
-            # Estimate ping based on distance
-            # Light travels about 300,000 km/s in vacuum, but network signals are slower
-            # due to processing and routing overhead
-            # A reasonable approximation: ~5ms per 1000km (very rough estimate)
-            estimated_ping = int(distance_km * 0.2)  # 0.2ms per km as a rough estimate
-            
-            # Add a baseline latency for processing (minimum 20ms)
-            estimated_ping += 20
-            
-            # Cap the estimate at reasonable values
-            return min(max(estimated_ping, 20), 500)  # Between 20ms and 500ms
-        else:
-            # If we couldn't calculate distance, return a default estimate
-            return 100  # Default estimate
-    except Exception as e:
-        logger.error(f"Error calculating geographic ping: {e}")
-        return 100  # Default fallback
+    # Return the average ping time, or 999 if all pings failed
+    return round(sum(ping_times) / max(len(ping_times), 1)) if ping_times else 999
 
 @bot.tree.command(name="mrole", description="Set the moderator role that can use admin commands.")
 @app_commands.describe(role="The role to grant moderator permissions.")
@@ -1165,70 +1105,94 @@ async def avatar(interaction: discord.Interaction, user: discord.User = None):
     embed.set_image(url=user.display_avatar.url)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="help", description="Show help for FrostMod commands.")
+# --- Help Commands ---
+@bot.tree.command(name="help", description="Show available commands and how to use them.")
 async def help_command(interaction: discord.Interaction):
     """Display a comprehensive help menu with all available commands."""
     embed = discord.Embed(
-        title="❄️ FrostMod Help Center",
+        title="❄️ FrostMod Command Guide",
         description="""
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-Welcome to **FrostMod**! Here are all the commands you can use.
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-> **Tip:** Use `/command` in chat. `<angle brackets>` = required, `[square brackets]` = optional.
+        **Welcome to FrostMod** - Your complete server management solution!
+        
+        This guide shows all available commands organized by category.
+        
+        **🔹 Command Format:**
+        • `/command` - Type these in chat or slash command menu
+        • `<required>` - Parameters you must provide
+        • `[optional]` - Parameters that have default values
+        
+        **Need help?** Contact a server admin or use `/frosthelp` to set up a permanent command center.
         """,
-        color=discord.Color.from_rgb(0, 183, 255)  # Frost/cyan blue
+        color=discord.Color.from_rgb(65, 105, 225)  # Royal blue for a clean, professional look
     )
+    
+    # Add bot avatar and styling
     embed.set_thumbnail(url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
+    embed.set_author(name="FrostMod v2.0", icon_url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
 
-    # Server Configuration Commands
+    # Server Configuration Commands - Enhanced descriptions
     config_cmds = (
-        "⚙️ **/mrole** `<role>`\nSet the moderator role for admin commands.\n\n"
-        "🔍 **/filter** `<level>`\nSet chat filter level (light, moderate, strict).\n\n"
-        "👋 **/welcome** `<channel>`\nSet the welcome channel for new members.\n\n"
-        "💬 **/wmessage** `<message>`\nSet the welcome message. Use `{user}`, `{membercount}`, `{servername}`.\n\n"
-        "🎭 **/joinrole** `<role>`\nSet the role automatically assigned to new members.\n\n"
-        "📋 **/logschannel** `<channel>`\nSet the channel for event and moderation logs.\n\n"
-        "🎫 **/ticketchannel** `<channel>`\nSet the channel for ticket creation.\n\n"
-        "🎉 **/bdaychannel** `<channel>`\nSet the birthday announcement channel."
+        "**⚙️ Server Configuration**\n\n"
+        "`/mrole <role>` ⭐\n*Assigns a role that can use admin commands without admin permissions.*\nGreat for creating moderator teams without full admin access.\n\n"
+        "`/filter <level>` 🛡️\n*Sets content filtering level for auto-moderation.*\nChoose from: `strict` (blocks most offensive terms), `moderate` (standard protection), or `light` (minimal filtering).\n\n"
+        "`/welcomechannel <channel>` 👋\n*Sets where new member welcome messages appear.*\nNew members will be greeted automatically in this channel.\n\n"
+        "`/wmessage <message>` ✏️\n*Customizes the welcome message text.*\nSpecial tags: `{user}` mentions the new member, `{membercount}` shows total members, `{servername}` displays server name.\n\n"
+        "`/joinrole <role>` 🏷️\n*Automatically assigns this role to new members.*\nPerfect for giving access to basic channels or starter roles.\n\n"
+        "`/logschannel <channel>` 📋\n*Sets where moderation and event logs appear.*\nTracks message deletions, member joins/leaves, warnings, and other important server events.\n\n"
+        "`/ticketchannel <channel>` 🎫\n*Creates a help ticket system in the specified channel.*\nMembers can create private channels to request help from staff.\n\n"
+        "`/bdaychannel <channel>` 🎂\n*Sets where birthday announcements appear.*\nAutomatic birthday celebrations for your members!"
     )
 
-    # Moderation Commands
+    # Moderation Commands - Enhanced descriptions
     mod_cmds = (
-        "🛡️ **/warn** `<user>` `<reason>`\nWarn a user and log the reason.\n\n"
-        "🛡️ **/warns** `<user>`\nView all warnings for a specific user.\n\n"
-        "🛡️ **/delwarns** `<user>`\nDelete all warnings for a specific user.\n\n"
-        "🧹 **/purge** `<amount>`\nDelete up to 100 messages from the current channel.\n\n"
-        "🧹 **/purgeuser** `<user>` `<amount>`\nDelete up to 100 messages from a specific user."
+        "**🛡️ Moderation Tools**\n\n"
+        "`/warn <user> <reason>` ⚠️\n*Issues a formal warning to a user.*\nWarnings are logged in the database and can be reviewed later. Users are notified via DM.\n\n"
+        "`/warns <user>` 📝\n*Displays all warnings for a specific user.*\nShows warning dates, reasons, and who issued them.\n\n"
+        "`/delwarns <user> [count]>` 🗑️\n*Removes warnings from a user's record.*\nSpecify a count to remove that many recent warnings, or removes all if count not specified.\n\n"
+        "`/purge <amount>` 🧹\n*Mass deletes recent messages in the current channel.*\nCan remove up to 100 messages at once. Messages must be under 14 days old.\n\n"
+        "`/purgeuser <user> <amount>` 🧹\n*Deletes messages from a specific user only.*\nSelectively removes a user's messages without affecting others."
     )
 
-    # Birthday System Commands
+    # Birthday System Commands - Enhanced descriptions
     birthday_cmds = (
-        "🎂 **/setbirthday** `<mm/dd/yyyy>`\nSet your birthday for server announcements.\n\n"
-        "🎂 **/delbday** `<user>`\nDelete a birthday (users can delete their own; admins can delete any).\n\n"
-        "🎉 **/testbirthdays**\nTest birthday announcements for the current day."
+        "**🎉 Birthday System**\n\n"
+        "`/setbirthday <date>` 🎂\n*Sets your birthday for automatic celebrations.*\nFormat: MM-DD (e.g., 05-15 for May 15th). Year is optional.\n\n"
+        "`/delbday <user>` 🗑️\n*Removes birthday data from the system.*\nMembers can delete their own birthdays, while admins can delete anyone's.\n\n"
+        "`/testbirthdays` ✅\n*Simulates birthday announcements for testing.*\nSends test birthday messages to the configured birthday channel."
     )
 
-    # Utility Commands
-    util_cmds = (
-        "🖼️ **/avatar** `[user]`\nShow a user's profile picture.\n\n"
-        "📈 **/status**\nDisplay bot uptime and latency.\n\n"
-        "🆘 **/support**\nGet a link to the Frostline support server.\n\n"
-        "❄️ **/help**\nShow this help message."
+    # Utility Commands - Enhanced descriptions
+    utility_cmds = (
+        "**🛠️ Utility Commands**\n\n"
+        "`/status` 📊\n*Shows real-time bot performance statistics.*\nDisplays ping times, uptime duration, and connection quality.\n\n"
+        "`/help` 📚\n*Displays this command guide directly to you.*\nQuick reference for all commands (visible only to you).\n\n"
+        "`/userinfo [user]` 👤\n*Shows detailed profile information about a user.*\nDisplays join dates, roles, account age, and other useful member data.\n\n"
+        "`/serverinfo` 🏠\n*Provides comprehensive server statistics.*\nShows member counts, channel information, role details, and server settings.\n\n"
+        "`/avatar [user]` 🖼️\n*Displays a user's avatar in full resolution.*\nPerfect for viewing profile pictures in their original size and quality."
     )
-    
-    # Fun Commands
+
+    # Fun Commands - Enhanced descriptions
     fun_cmds = (
-        "💃 **/twerkz**\nGenerates a random twerk message."
+        "**🎮 Fun & Games**\n\n"
+        "`/roll [dice] [sides]` 🎲\n*Rolls virtual dice with customizable settings.*\nDefault: 1d6 (one six-sided die). Examples: `/roll 2 20` rolls two 20-sided dice.\n\n"
+        "`/joke` 😄\n*Shares a random joke from our collection.*\nGreat for lightening the mood or breaking the ice!\n\n"
+        "`/8ball <question>` 🎱\n*Consults the mystical 8-ball for answers.*\nAsk a yes/no question and receive a mysteriously accurate (or not) prediction."
     )
 
-    embed.add_field(name="━━━━━━━━ ⚙️ Server Configuration ━━━━━━━━", value=config_cmds, inline=False)
-    embed.add_field(name="━━━━━━━━ 🛡️ Moderation Tools ━━━━━━━━", value=mod_cmds, inline=False)
-    embed.add_field(name="━━━━━━━━ 🎂 Birthday System ━━━━━━━━", value=birthday_cmds, inline=False)
-    embed.add_field(name="━━━━━━━━ 🔧 Utility Commands ━━━━━━━━", value=util_cmds, inline=False)
-    embed.add_field(name="━━━━━━━━ 🎉 Fun Commands ━━━━━━━━", value=fun_cmds, inline=False)
+    # Add fields to embed with improved visual spacing
+    embed.add_field(name="​", value=config_cmds, inline=False)  # Section already has a header in the text
+    embed.add_field(name="​", value=mod_cmds, inline=False)      # Using empty field names since headers
+    embed.add_field(name="​", value=birthday_cmds, inline=False) # are included in the text content
+    embed.add_field(name="​", value=utility_cmds, inline=False)
+    embed.add_field(name="​", value=fun_cmds, inline=False)
     
-    embed.set_footer(text="FrostMod • Need help? Use /support or join the support server!", icon_url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
+    # Add a divider and tip at the bottom
+    embed.add_field(name="​", value="━━━━━━━━━━━━━━━━━━━━━━━━━━", inline=False)
+    embed.add_field(name="📌 Pro Tip", value="*Admins can use `/frosthelp <channel>` to create a permanent command center in any channel!*", inline=False)
+
+    # Add a stylish footer
+    embed.set_footer(text="Powered by Frostline Solutions LLC | FrostMod v2.0", icon_url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
+    embed.timestamp = datetime.datetime.now()
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -1762,18 +1726,302 @@ async def on_message(message):
         logger.error(f"Error in on_message event: {e}")
 
 # --- Fun Commands ---
+import random
+import datetime
 
-@bot.tree.command(name="twerkz", description="Sends a special twerk message")
+@bot.tree.command(name="twerkz", description="Generates a random twerk message")
 async def twerkz(interaction: discord.Interaction):
-    """Send 'Tristans gay dude' with a mention to a specific user."""
-    # The user ID to ping
-    user_id = 398244010587848709
+    """Generate a random message from a predefined list of twerk messages."""
+    # List of messages to randomly select from
+    messages = [
+        "Tristans gay dude",
+        "Twerking in the moonlight",
+        "Shake what your mama gave you",
+        "Is it hot in here or is it just me twerking?",
+        "Drop it like it's hot",
+        "Twerk team captain reporting for duty",
+        "Professional twerker at your service",
+        "Twerk till ya can't twerk no more",
+        "*intense twerking intensifies*"
+    ]
     
-    # Create the message with the mention
-    message = f"Tristans gay dude <@{user_id}>"
+    # Randomly select a message
+    message = random.choice(messages)
+    
+    # Create an embed with Frostline branding
+    embed = discord.Embed(
+        title="❄️ Random Twerk Message",
+        description=message,
+        color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
+    )
+    embed.set_footer(text="Powered by Frostline Solutions LLC | FrostMod v2.0")
     
     # Send the message
-    await interaction.response.send_message(message)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="8ball", description="Ask the magic 8-ball a question")
+@app_commands.describe(question="The question you want to ask the magic 8-ball")
+async def eightball(interaction: discord.Interaction, question: str):
+    """Ask the magic 8-ball a question and get a mysterious answer."""
+    responses = [
+        "It is certain.",
+        "It is decidedly so.",
+        "Without a doubt.",
+        "Yes – definitely.",
+        "You may rely on it.",
+        "As I see it, yes.",
+        "Most likely.",
+        "Outlook good.",
+        "Yes.",
+        "Signs point to yes.",
+        "Reply hazy, try again.",
+        "Ask again later.",
+        "Better not tell you now.",
+        "Cannot predict now.",
+        "Concentrate and ask again.",
+        "Don't count on it.",
+        "My reply is no.",
+        "My sources say no.",
+        "Outlook not so good.",
+        "Very doubtful."
+    ]
+    
+    response = random.choice(responses)
+    
+    embed = discord.Embed(
+        title="❄️ Magic 8-Ball",
+        description=f"**Question:** {question}\n\n**Answer:** {response}",
+        color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
+    )
+    embed.set_footer(text="Powered by Frostline Solutions LLC | FrostMod v2.0")
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="coinflip", description="Flip a coin")
+async def coinflip(interaction: discord.Interaction):
+    """Flip a coin and get heads or tails."""
+    result = random.choice(["Heads", "Tails"])
+    
+    embed = discord.Embed(
+        title="❄️ Coin Flip",
+        description=f"The coin landed on: **{result}**!",
+        color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
+    )
+    embed.set_footer(text="Powered by Frostline Solutions LLC | FrostMod v2.0")
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="roll", description="Roll dice")
+@app_commands.describe(
+    dice="Number of dice to roll (default: 1)",
+    sides="Number of sides on each die (default: 6)"
+)
+async def roll(interaction: discord.Interaction, dice: int = 1, sides: int = 6):
+    """Roll a specified number of dice with a specified number of sides."""
+    # Input validation
+    if dice < 1 or dice > 10:
+        await interaction.response.send_message("Please roll between 1 and 10 dice.", ephemeral=True)
+        return
+    if sides < 2 or sides > 100:
+        await interaction.response.send_message("Dice must have between 2 and 100 sides.", ephemeral=True)
+        return
+    
+    # Roll the dice
+    results = [random.randint(1, sides) for _ in range(dice)]
+    total = sum(results)
+    
+    # Format the results
+    if dice == 1:
+        result_text = f"You rolled a **{total}**!"
+    else:
+        result_text = f"You rolled: {', '.join(str(r) for r in results)}\nTotal: **{total}**"
+    
+    embed = discord.Embed(
+        title=f"❄️ Dice Roll ({dice}d{sides})",
+        description=result_text,
+        color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
+    )
+    embed.set_footer(text="Powered by Frostline Solutions LLC | FrostMod v2.0")
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="joke", description="Get a random joke")
+async def joke(interaction: discord.Interaction):
+    """Get a random joke."""
+    jokes = [
+        "Why don't scientists trust atoms? Because they make up everything!",
+        "What's the best thing about Switzerland? I don't know, but the flag is a big plus.",
+        "I told my wife she was drawing her eyebrows too high. She looked surprised.",
+        "Why did the scarecrow win an award? Because he was outstanding in his field!",
+        "I'm reading a book about anti-gravity. It's impossible to put down!",
+        "What do you call a fake noodle? An impasta!",
+        "Why don't eggs tell jokes? They'd crack each other up!",
+        "How do you organize a space party? You planet!",
+        "Why did the bicycle fall over? Because it was two tired!",
+        "What's orange and sounds like a parrot? A carrot!",
+        "Why did the golfer bring two pairs of pants? In case he got a hole in one!",
+        "How do you make a tissue dance? Put a little boogie in it!",
+        "Why couldn't the leopard play hide and seek? Because he was always spotted!"
+    ]
+    
+    joke = random.choice(jokes)
+    
+    embed = discord.Embed(
+        title="❄️ Random Joke",
+        description=joke,
+        color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
+    )
+    embed.set_footer(text="Powered by Frostline Solutions LLC | FrostMod v2.0")
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="frosthelp", description="Post a permanent help embed in a specified channel.")
+@app_commands.describe(channel="The channel to post the help embed in.")
+async def frosthelp(interaction: discord.Interaction, channel: discord.TextChannel):
+    """Post a permanent help embed in a specified channel. Admins and moderators only."""
+    # Check if user has permission (admin or mod role)
+    if not await is_admin(interaction):
+        await interaction.response.send_message("You must be an administrator or have the mod role to use this command.", ephemeral=True)
+        return
+    
+    try:
+        # Create enhanced comprehensive help embed with the new design
+        embed = discord.Embed(
+            title="❄️ FrostMod Command Center",
+            description="""
+            **Welcome to the FrostMod Command Center!**
+            
+            This is your server's permanent guide to all FrostMod commands.
+            Reference this resource whenever you need help using any feature.
+            
+            **🔹 Command Format:**
+            • `/command` - Type these in chat or slash command menu
+            • `<required>` - Parameters you must provide
+            • `[optional]` - Parameters that have default values
+            """,
+            color=discord.Color.from_rgb(65, 105, 225)  # Royal blue for a clean, professional look
+        )
+        
+        # Add bot avatar and styling
+        embed.set_thumbnail(url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
+        embed.set_author(name="FrostMod v2.0", icon_url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
+
+        # Server Configuration Commands - Enhanced descriptions
+        config_cmds = (
+            "**⚙️ Server Configuration**\n\n"
+            "`/mrole <role>` ⭐\n*Assigns a role that can use admin commands without admin permissions.*\nGreat for creating moderator teams without full admin access.\n\n"
+            "`/filter <level>` 🛡️\n*Sets content filtering level for auto-moderation.*\nChoose from: `strict` (blocks most offensive terms), `moderate` (standard protection), or `light` (minimal filtering).\n\n"
+            "`/welcomechannel <channel>` 👋\n*Sets where new member welcome messages appear.*\nNew members will be greeted automatically in this channel.\n\n"
+            "`/wmessage <message>` ✏️\n*Customizes the welcome message text.*\nSpecial tags: `{user}` mentions the new member, `{membercount}` shows total members, `{servername}` displays server name.\n\n"
+            "`/joinrole <role>` 🏷️\n*Automatically assigns this role to new members.*\nPerfect for giving access to basic channels or starter roles.\n\n"
+            "`/logschannel <channel>` 📋\n*Sets where moderation and event logs appear.*\nTracks message deletions, member joins/leaves, warnings, and other important server events.\n\n"
+            "`/ticketchannel <channel>` 🎫\n*Creates a help ticket system in the specified channel.*\nMembers can create private channels to request help from staff.\n\n"
+            "`/bdaychannel <channel>` 🎂\n*Sets where birthday announcements appear.*\nAutomatic birthday celebrations for your members!"
+        )
+
+        # Moderation Commands - Enhanced descriptions
+        mod_cmds = (
+            "**🛡️ Moderation Tools**\n\n"
+            "`/warn <user> <reason>` ⚠️\n*Issues a formal warning to a user.*\nWarnings are logged in the database and can be reviewed later. Users are notified via DM.\n\n"
+            "`/warns <user>` 📝\n*Displays all warnings for a specific user.*\nShows warning dates, reasons, and who issued them.\n\n"
+            "`/delwarns <user> [count]>` 🗑️\n*Removes warnings from a user's record.*\nSpecify a count to remove that many recent warnings, or removes all if count not specified.\n\n"
+            "`/purge <amount>` 🧹\n*Mass deletes recent messages in the current channel.*\nCan remove up to 100 messages at once. Messages must be under 14 days old.\n\n"
+            "`/purgeuser <user> <amount>` 🧹\n*Deletes messages from a specific user only.*\nSelectively removes a user's messages without affecting others."
+        )
+
+        # Birthday System Commands - Enhanced descriptions
+        birthday_cmds = (
+            "**🎉 Birthday System**\n\n"
+            "`/setbirthday <date>` 🎂\n*Sets your birthday for automatic celebrations.*\nFormat: MM-DD (e.g., 05-15 for May 15th). Year is optional.\n\n"
+            "`/delbday <user>` 🗑️\n*Removes birthday data from the system.*\nMembers can delete their own birthdays, while admins can delete anyone's.\n\n"
+            "`/testbirthdays` ✅\n*Simulates birthday announcements for testing.*\nSends test birthday messages to the configured birthday channel."
+        )
+
+        # Utility Commands - Enhanced descriptions
+        utility_cmds = (
+            "**🛠️ Utility Commands**\n\n"
+            "`/status` 📊\n*Shows real-time bot performance statistics.*\nDisplays ping times, uptime duration, and connection quality.\n\n"
+            "`/help` 📚\n*Displays this command guide directly to you.*\nQuick reference for all commands (visible only to you).\n\n"
+            "`/userinfo [user]` 👤\n*Shows detailed profile information about a user.*\nDisplays join dates, roles, account age, and other useful member data.\n\n"
+            "`/serverinfo` 🏠\n*Provides comprehensive server statistics.*\nShows member counts, channel information, role details, and server settings.\n\n"
+            "`/avatar [user]` 🖼️\n*Displays a user's avatar in full resolution.*\nPerfect for viewing profile pictures in their original size and quality."
+        )
+
+        # Fun Commands - Enhanced descriptions
+        fun_cmds = (
+            "**🎮 Fun & Games**\n\n"
+            "`/roll [dice] [sides]` 🎲\n*Rolls virtual dice with customizable settings.*\nDefault: 1d6 (one six-sided die). Examples: `/roll 2 20` rolls two 20-sided dice.\n\n"
+            "`/joke` 😄\n*Shares a random joke from our collection.*\nGreat for lightening the mood or breaking the ice!\n\n"
+            "`/8ball <question>` 🎱\n*Consults the mystical 8-ball for answers.*\nAsk a yes/no question and receive a mysteriously accurate (or not) prediction."
+        )
+        
+        # Add fields to embed with improved visual spacing
+        embed.add_field(name="​", value=config_cmds, inline=False)  # Section already has a header in the text
+        embed.add_field(name="​", value=mod_cmds, inline=False)      # Using empty field names since headers
+        embed.add_field(name="​", value=birthday_cmds, inline=False) # are included in the text content
+        embed.add_field(name="​", value=utility_cmds, inline=False)
+        embed.add_field(name="​", value=fun_cmds, inline=False)
+        
+        # Add information about this help center at the bottom
+        embed.add_field(name="​", value="━━━━━━━━━━━━━━━━━━━━━━━━━━", inline=False)
+        embed.add_field(name="📃 About This Help Center", 
+                      value="*This is a permanent help resource. Server staff can update it at any time with the `/frosthelp` command.*", 
+                      inline=False)
+        
+        # Add stylish footer with timestamp
+        embed.set_footer(text="FrostMod v2.0 | Powered by Frostline Solutions LLC", 
+                       icon_url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
+        embed.timestamp = datetime.datetime.now()
+        
+        # Send the help embed to the specified channel
+        help_message = await channel.send(embed=embed)
+        
+        # Update the database to store the help channel ID
+        async with bot.db_pool.acquire() as conn:
+            # Check if the server exists, if not, create it
+            count = await conn.fetchval('''
+                SELECT COUNT(*) FROM servers WHERE guild_id = $1
+            ''', interaction.guild.id)
+            
+            if count == 0:
+                # Server doesn't exist in database, insert it
+                await conn.execute('''
+                    INSERT INTO servers (guild_id, guild_name, help_channel_id) 
+                    VALUES ($1, $2, $3)
+                ''', interaction.guild.id, interaction.guild.name, channel.id)
+            else:
+                # Server exists, update help_channel_id
+                await conn.execute('''
+                    UPDATE servers SET help_channel_id = $1, guild_name = $2 WHERE guild_id = $3
+                ''', channel.id, interaction.guild.name, interaction.guild.id)
+        
+        await interaction.response.send_message(f"Help center has been successfully set up in {channel.mention}. The help embed will be permanently displayed there.", ephemeral=True)
+        
+        logger.info(f"Help channel set to {channel.id} for guild {interaction.guild.name} ({interaction.guild.id})")
+        
+    except Exception as e:
+        logger.error(f"Error setting up help center: {e}")
+        await interaction.response.send_message(f"Error setting up help center: {e}", ephemeral=True)
+
+# Function to check if user has moderator role
+async def is_moderator(interaction):
+    """Check if a user has the moderator role set for the guild."""
+    try:
+        if interaction.user.guild_permissions.administrator or interaction.user.id == OWNER_ID:
+            return True
+            
+        async with bot.db_pool.acquire() as conn:
+            row = await conn.fetchrow('''SELECT mod_role_id FROM servers WHERE guild_id = $1''', interaction.guild.id)
+            
+        if row and row['mod_role_id']:
+            mod_role = interaction.guild.get_role(row['mod_role_id'])
+            if mod_role and mod_role in interaction.user.roles:
+                return True
+                
+        return False
+    except Exception as e:
+        logger.error(f"Error checking moderator status: {e}")
+        return False
 
 if __name__ == "__main__":
     bot.run(TOKEN)

@@ -71,6 +71,10 @@ FrostMod V2 is a powerful, scalable Discord moderation bot built for Frostline S
 
 ### Fun Commands
 - **/twerkz** — Generates a random twerk message
+- **/8ball <question>** — Ask the magic 8-ball a question
+- **/coinflip** — Flip a coin and get heads or tails
+- **/roll [dice] [sides]** — Roll dice with customizable count and sides
+- **/joke** — Get a random joke
 
 *All configuration and moderation commands require Administrator permission or the server's mod role (set with /mrole).*
 
