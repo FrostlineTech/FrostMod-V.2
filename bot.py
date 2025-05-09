@@ -165,7 +165,7 @@ async def rotate_status():
             await bot.change_presence(status=discord.Status.online, activity=activity)
         except Exception as e:
             logger.exception(f"Status Rotation Error: Failed to change presence: {e}")
-        await asyncio.sleep(60)  # Changed to 60 seconds to reduce API calls
+        await asyncio.sleep(10)  
 
 
 # --- Helper Functions ---
@@ -175,11 +175,7 @@ async def rotate_status():
 # Words are stored in lowercase for case-insensitive matching
 STRICT_WORDS = {
     # General profanity, mild offensive terms
-    "fuck", "shit", "bitch", "fck", "whore", "ass", "damn", "bastard", 
-    "asshole", "crap", "piss", "dick", "cock", "pussy", "vagina", "anal", 
-    "butthole", "blowjob", "handjob", "rimjob", "booty", "tits", "titties", 
-    "boob", "boobs", "penis", "cumshot", "bj", "wank", "jizz", "cum", "masturbate",
-    "fuk", "motherfucker", "fucker", "bullshit", "bs", "stfu", "milf", "dilf"
+ 
 }
 
 MODERATE_WORDS = {
@@ -1133,7 +1129,8 @@ Welcome to **FrostMod**! Here are all the commands you can use.
         "🎭 **/joinrole** `<role>`\nSet the role automatically assigned to new members.\n\n"
         "📋 **/logschannel** `<channel>`\nSet the channel for event and moderation logs.\n\n"
         "🎫 **/ticketchannel** `<channel>`\nSet the channel for ticket creation.\n\n"
-        "🎉 **/bdaychannel** `<channel>`\nSet the birthday announcement channel."
+        "🎉 **/bdaychannel** `<channel>`\nSet the birthday announcement channel.\n\n"
+        "🔢 **/countingchannel** `<channel>`\nSet the channel for the counting game."
     )
 
     # Moderation Commands
@@ -1167,7 +1164,8 @@ Welcome to **FrostMod**! Here are all the commands you can use.
         "🎱 **/8ball** `<question>`\nAsk the magic 8-ball a question.\n\n"
         "🪙 **/coinflip**\nFlip a coin and get heads or tails.\n\n"
         "🎲 **/roll** `[dice]` `[sides]`\nRoll dice with customizable count and sides.\n\n"
-        "😂 **/joke**\nGet a random joke."
+        "😂 **/joke**\nGet a random joke.\n\n"
+        "🔢 **/maxcount** `<1-1000>`\nSet the maximum target for the counting game."
     )
 
     embed.add_field(name="━━━━━━━━ ⚙️ Server Configuration ━━━━━━━━", value=config_cmds, inline=False)
@@ -1645,73 +1643,109 @@ async def on_user_update(before, after):
 
 @bot.event
 async def on_message(message):
-    # Skip processing for bot messages or DMs
-    if message.author.bot or not message.guild:
-        return
-        
     try:
-        # Check message against filter
-        filter_level = await get_filter_level(message.guild.id)
-        blocked, reason = check_message_for_filter(message.content, filter_level)
+        # Ignore messages from bots
+        if message.author.bot:
+            return
         
-        if blocked:
-            # Try to delete the message
+        # Ignore direct messages
+        if not message.guild:
+            return
+            
+        # Check if this is a counting channel message
+        try:
+            counting_channel_id = await db_fetch(
+                '''SELECT counting_channel FROM servers WHERE guild_id = $1''',
+                message.guild.id
+            )
+            
+            if counting_channel_id and counting_channel_id[0]['counting_channel'] and \
+            message.channel.id == counting_channel_id[0]['counting_channel']:
+                # This is a message in the counting channel
+                await handle_counting_message(message)
+                return  # Skip other checks for messages in counting channel
+        except Exception as e:
+            logger.error(f"Error checking counting channel: {e}")
+            
+        # Check if the message needs to be filtered
+        filter_level = await get_filter_level(message.guild.id)
+        is_filtered, filtered_word = check_message_for_filter(message.content, filter_level)
+        
+        if is_filtered:
+            # Delete the filtered message
             try:
                 await message.delete()
-                await message.channel.send(
-                    f"{message.author.mention}, your message was deleted because you used a banned word and have been warned. 3 or more warnings may lead to disciplinary action.",
-                    delete_after=7
-                )
-            except Exception as e:
-                logger.error(f"Could not delete filtered message: {e}")
+                # Send a warning message
+                warning = await message.channel.send(
+                    f"{message.author.mention}, your message was removed for containing filtered content.\n" +
+                    f"The word `{filtered_word}` is not allowed in this server.")
+                # Delete the warning after 5 seconds
+                await asyncio.sleep(5)
+                await warning.delete()
+            except discord.errors.NotFound:
+                # Message already deleted
+                pass
+            except discord.errors.Forbidden:
+                # Bot doesn't have permission
+                pass
                 
-            # Auto-warn user for filtered word
+            # Log the filtered message to the logs channel if set
             try:
-                # Add warning to database
-                async with bot.db_pool.acquire() as conn:
-                    await conn.execute(
-                        '''INSERT INTO warns (guild_id, guild_name, user_id, username, reason) VALUES ($1, $2, $3, $4, $5)''',
+                logs_channel_id = await db_fetch(
+                    '''SELECT logs_channel FROM servers WHERE guild_id = $1''',
+                    message.guild.id
+                )
+                
+                if logs_channel_id and logs_channel_id[0]['logs_channel']:
+                    logs_channel = bot.get_channel(logs_channel_id[0]['logs_channel'])
+                    if logs_channel:
+                        embed = discord.Embed(
+                            title="Message Filtered",
+                            description=f"A message by {message.author.mention} was filtered in {message.channel.mention}",
+                            color=discord.Color.red()
+                        )
+                        embed.add_field(name="Filtered Word", value=f"`{filtered_word}`", inline=False)
+                        embed.add_field(name="Message Content", value=f"`{message.content}`", inline=False)
+                        embed.set_footer(text=f"User ID: {message.author.id}")
+                        embed.timestamp = datetime.datetime.now()
+                        
+                        await logs_channel.send(embed=embed)
+                        
+                # Auto-warn the user for filtered content
+                try:
+                    # Add warning to database
+                    await db_execute(
+                        '''INSERT INTO warns (guild_id, guild_name, user_id, username, reason) 
+                        VALUES ($1, $2, $3, $4, $5)''',
                         message.guild.id,
                         message.guild.name,
                         message.author.id,
                         message.author.name,
-                        f"Automatic warning: Used banned word in message."
+                        f"Automatic warning: Used filtered word '{filtered_word}'"
                     )
-                logger.info(f"Auto-warned {message.author} ({message.author.id}) in guild {message.guild.name} for filtered word")
-                
-                # Log to server's logs channel if set
-                async with bot.db_pool.acquire() as conn:
-                    row = await conn.fetchrow('''SELECT logs_channel_id FROM servers WHERE guild_id = $1''', message.guild.id)
-                if row and row['logs_channel_id']:
-                    log_channel = message.guild.get_channel(row['logs_channel_id'])
-                    if log_channel:
-                        embed = discord.Embed(
-                            title="Message Filtered",
-                            description=f"**User:** {message.author.mention}\n**Channel:** {message.channel.mention}\n**Filter Level:** {filter_level}",
-                            color=discord.Color.orange(),
-                            timestamp=discord.utils.utcnow()
-                        )
-                        embed.set_author(name=message.guild.name, icon_url=message.guild.icon.url if message.guild.icon else discord.Embed.Empty)
-                        embed.set_thumbnail(url=message.author.display_avatar.url)
-                        await log_channel.send(embed=embed)
-                
-                # Notify the user via DM
-                try:
-                    await message.author.send(f"You have been automatically warned in **{message.guild.name}** for using a banned word.")
-                except Exception:
-                    # If DM fails, send in channel
-                    await message.channel.send(f"{message.author.mention}, you have been automatically warned for using a banned word.", delete_after=10)
+                    
+                    # Try to notify user via DM
+                    try:
+                        await message.author.send(f"You have been automatically warned in **{message.guild.name}** for using a banned word.")
+                    except Exception:
+                        # If DM fails, send in channel
+                        await message.channel.send(f"{message.author.mention}, you have been automatically warned for using a banned word.", delete_after=10)
+                except Exception as e:
+                    logger.error(f"Could not auto-warn user: {e}")
+                    
             except Exception as e:
-                logger.error(f"Could not auto-warn user: {e}")
-        else:
-            # Process commands if message wasn't filtered
-            await bot.process_commands(message)
+                logger.error(f"Error logging filtered message: {e}")
+        
+        # Process commands
+        await bot.process_commands(message)
+        
     except Exception as e:
         logger.error(f"Error in on_message event: {e}")
 
 # --- Fun Commands ---
 import random
 import datetime
+from datetime import timedelta
 
 @bot.tree.command(name="twerkz", description="Generates a random twerk message")
 async def twerkz(interaction: discord.Interaction):
@@ -2353,6 +2387,296 @@ async def userinfo(interaction: discord.Interaction, user: discord.Member = None
     embed.timestamp = now
     
     await interaction.response.send_message(embed=embed)
+
+# Counting game logic
+async def handle_counting_message(message):
+    """Process a message in the counting channel."""
+    try:
+        # Try to convert message content to an integer
+        try:
+            count = int(message.content.strip())
+        except ValueError:
+            # Not a valid number, delete the message
+            await message.delete()
+            warning = await message.channel.send(
+                f"{message.author.mention}, only numbers are allowed in the counting channel.")
+            await asyncio.sleep(5)
+            await warning.delete()
+            return
+            
+        # Get current count status from database
+        logger.info(f"Fetching count status for guild {message.guild.id} ({message.guild.name})")
+        game_data = await db_fetch(
+            '''SELECT current_count, last_user_id, max_count, last_message_id 
+               FROM counting_game WHERE guild_id = $1''',
+            message.guild.id
+        )
+        
+        # If no game data found, initialize it
+        if not game_data:
+            logger.info(f"Initializing new counting game for guild {message.guild.id} ({message.guild.name})")
+            # Start a new game at count 0
+            await db_execute(
+                '''INSERT INTO counting_game(guild_id, current_count, max_count) 
+                   VALUES($1, 0, 100)''',
+                message.guild.id
+            )
+            game_data = [{"current_count": 0, "last_user_id": None, "max_count": 100, "last_message_id": None}]
+            logger.info(f"Created new counting game entry in database for guild {message.guild.id}")
+        
+        current_count = game_data[0]["current_count"]
+        last_user_id = game_data[0]["last_user_id"]
+        max_count = game_data[0]["max_count"]
+        
+        # Check if the same user is counting twice in a row
+        if last_user_id and last_user_id == message.author.id:
+            await message.delete()
+            warning = await message.channel.send(
+                f"{message.author.mention}, you can't count twice in a row! Wait for someone else to continue.")
+            await asyncio.sleep(5)
+            await warning.delete()
+            return
+            
+        # Check if the count is the next number in sequence
+        expected_count = current_count + 1
+        if count != expected_count:
+            # Wrong number, reset the game
+            await message.add_reaction('❌')
+            
+            # Create reset embed
+            embed = discord.Embed(
+                title="❌ Counting Failed",
+                description=f"**{message.author.display_name}** broke the count by entering **{count}**",
+                color=discord.Color.red()
+            )
+            embed.add_field(name="Expected Number", value=str(expected_count), inline=True)
+            embed.add_field(name="Current Count", value="The count has been reset to 0", inline=True)
+            embed.set_footer(text="Start counting from 1 again!")
+            embed.timestamp = datetime.datetime.now()
+            
+            # Reset the game
+            logger.info(f"Resetting count for guild {message.guild.id} ({message.guild.name}) - wrong number entered by {message.author.name} ({message.author.id})")
+            await db_execute(
+                '''UPDATE counting_game 
+                   SET current_count = 0, last_user_id = NULL, last_message_id = $2 
+                   WHERE guild_id = $1''',
+                message.guild.id, message.id
+            )
+            logger.info(f"Count reset to 0 in database for guild {message.guild.id}")
+            
+            await message.channel.send(embed=embed)
+            return
+            
+        # Correct number!
+        await message.add_reaction('✅')
+        
+        # Update the count in the database
+        logger.info(f"Updating count to {count} for guild {message.guild.id} ({message.guild.name}), user: {message.author.name} ({message.author.id})")
+        await db_execute(
+            '''UPDATE counting_game 
+               SET current_count = $2, last_user_id = $3, last_message_id = $4 
+               WHERE guild_id = $1''',
+            message.guild.id, count, message.author.id, message.id
+        )
+        logger.info(f"Count successfully updated to {count} in database")
+        
+        # Check if we reached the max count (victory)
+        if count >= max_count:
+            # Create victory embed
+            embed = discord.Embed(
+                title="🎉 Counting Victory",
+                description=f"The server has successfully counted to **{max_count}**!",
+                color=discord.Color.from_rgb(0, 191, 255)  # Frostline blue
+            )
+            embed.add_field(name="Final Count", value=str(count), inline=True)
+            embed.add_field(name="Last Counter", value=message.author.mention, inline=True)
+            embed.set_footer(text="The count has been reset. Start from 1 again!")
+            embed.timestamp = datetime.datetime.now()
+            
+            # Reset the game for next round
+            logger.info(f"Victory achieved for guild {message.guild.id} ({message.guild.name})! Resetting count for new game.")
+            await db_execute(
+                '''UPDATE counting_game 
+                   SET current_count = 0, last_user_id = NULL 
+                   WHERE guild_id = $1''',
+                message.guild.id
+            )
+            logger.info(f"Count reset to 0 after victory in database for guild {message.guild.id}")
+            
+            await message.channel.send(embed=embed)
+            
+    except Exception as e:
+        logger.error(f"Error in counting game: {e}")
+
+@bot.tree.command(name="countingchannel", description="Set the channel for counting game")
+@app_commands.describe(channel="The channel to use for counting")
+@app_commands.guild_only()
+async def countingchannel(interaction: discord.Interaction, channel: discord.TextChannel):
+    """Set the channel for the counting game. Admin only."""
+    # Check if user has admin permissions
+    if not await is_admin(interaction):
+        await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
+        return
+        
+    try:
+        # Update the counting channel in the database
+        logger.info(f"Setting counting channel to {channel.id} ({channel.name}) for guild {interaction.guild.id} ({interaction.guild.name})")
+        await db_execute(
+            '''UPDATE servers SET counting_channel = $2 WHERE guild_id = $1''',
+            interaction.guild.id, channel.id
+        )
+        logger.info(f"Counting channel updated in database for guild {interaction.guild.id}")
+        
+        # Initialize or reset the counting game for this guild
+        game_exists = await db_fetch(
+            '''SELECT 1 FROM counting_game WHERE guild_id = $1''',
+            interaction.guild.id
+        )
+        
+        if not game_exists:
+            logger.info(f"Creating new counting game entry for guild {interaction.guild.id} ({interaction.guild.name})")
+            await db_execute(
+                '''INSERT INTO counting_game(guild_id, current_count, max_count) 
+                   VALUES($1, 0, 100)''',
+                interaction.guild.id
+            )
+            logger.info(f"New counting game entry created in database")
+        else:
+            logger.info(f"Resetting existing counting game for guild {interaction.guild.id} ({interaction.guild.name})")
+            await db_execute(
+                '''UPDATE counting_game 
+                   SET current_count = 0, last_user_id = NULL 
+                   WHERE guild_id = $1''',
+                interaction.guild.id
+            )
+            logger.info(f"Existing counting game reset in database")
+        
+        # Set fixed max count to 100
+        max_count = 100
+        
+        # Create embed for channel setup
+        embed = discord.Embed(
+            title="🔢 Counting Channel Set",
+            description=f"The counting game channel has been set to {channel.mention}.",
+            color=discord.Color.from_rgb(0, 191, 255)  # Frostline blue
+        )
+        embed.add_field(name="How to Play", value="Count sequentially starting from 1. Each user can only count once in a row.", inline=False)
+        embed.add_field(name="Goal", value=f"Reach **{max_count}** without making a mistake!", inline=False)
+        embed.add_field(name="Rules", value="• Only numbers are allowed\n• Must count in sequence\n• No counting twice in a row\n• If someone makes a mistake, count resets to 0", inline=False)
+        embed.set_footer(text="Use /maxcount to adjust the maximum target number")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+        
+        # Send a starting message to the counting channel
+        start_embed = discord.Embed(
+            title="🔢 Counting Game",
+            description=f"Let's start counting from **1** to **{max_count}**!",
+            color=discord.Color.from_rgb(0, 191, 255)  # Frostline blue
+        )
+        start_embed.add_field(name="Current Count", value="0", inline=True)
+        start_embed.add_field(name="Next Number", value="1", inline=True)
+        
+        # Add rules and instructions to the same embed
+        start_embed.add_field(name="How to Play", value="Count sequentially starting from 1. Each user can only count once in a row.", inline=False)
+        start_embed.add_field(name="Goal", value=f"Reach **{max_count}** without making a mistake!", inline=False)
+        start_embed.add_field(name="Rules", value="• Only numbers are allowed\n• Must count in sequence\n• No counting twice in a row\n• If someone makes a mistake, count resets to 0", inline=False)
+        start_embed.set_footer(text="Use /maxcount to adjust the maximum target number | Start by sending the number 1 in this channel")
+        
+        await channel.send(embed=start_embed)
+        
+    except Exception as e:
+        logger.error(f"Error setting counting channel: {e}")
+        await interaction.response.send_message(f"Error setting counting channel: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="maxcount", description="Set the maximum target for the counting game")
+@app_commands.describe(maximum="The maximum number to count up to (1-1000)")
+@app_commands.guild_only()
+async def maxcount(interaction: discord.Interaction, maximum: int):
+    """Set the maximum target number for the counting game. Admin only."""
+    # Check if user has admin permissions
+    if not await is_admin(interaction):
+        await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
+        return
+        
+    # Validate the maximum count
+    if maximum < 1 or maximum > 1000:
+        await interaction.response.send_message("The maximum count must be between 1 and 1000.", ephemeral=True)
+        return
+        
+    try:
+        # Check if counting is set up for this guild
+        counting_channel = await db_fetch(
+            '''SELECT counting_channel FROM servers WHERE guild_id = $1''',
+            interaction.guild.id
+        )
+        
+        if not counting_channel or not counting_channel[0]['counting_channel']:
+            await interaction.response.send_message(
+                "Please set up a counting channel first using /countingchannel.", 
+                ephemeral=True
+            )
+            return
+            
+        # Update the maximum count in the database
+        game_exists = await db_fetch(
+            '''SELECT 1 FROM counting_game WHERE guild_id = $1''',
+            interaction.guild.id
+        )
+        
+        if not game_exists:
+            logger.info(f"Creating new counting game with max_count={maximum} for guild {interaction.guild.id} ({interaction.guild.name})")
+            await db_execute(
+                '''INSERT INTO counting_game(guild_id, current_count, max_count) 
+                   VALUES($1, 0, $2)''',
+                interaction.guild.id, maximum
+            )
+            logger.info(f"New counting game created with max_count={maximum} in database")
+        else:
+            logger.info(f"Updating max_count to {maximum} for guild {interaction.guild.id} ({interaction.guild.name})")
+            await db_execute(
+                '''UPDATE counting_game SET max_count = $2 WHERE guild_id = $1''',
+                interaction.guild.id, maximum
+            )
+            logger.info(f"Updated max_count to {maximum} in database")
+        
+        # Create confirmation embed
+        embed = discord.Embed(
+            title="🔢 Counting Goal Updated",
+            description=f"The maximum counting target has been set to **{maximum}**.",
+            color=discord.Color.from_rgb(0, 191, 255)  # Frostline blue
+        )
+        embed.add_field(name="Current Game", value="The current counting game will continue with the new maximum.", inline=False)
+        embed.set_footer(text="Good luck counting to the new goal!")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+        
+        # Update the counting channel with the new max
+        channel_id = counting_channel[0]['counting_channel']
+        channel = bot.get_channel(channel_id)
+        
+        if channel:
+            # Get current game state
+            game_data = await db_fetch(
+                '''SELECT current_count FROM counting_game WHERE guild_id = $1''',
+                interaction.guild.id
+            )
+            
+            current_count = game_data[0]["current_count"] if game_data else 0
+            
+            update_embed = discord.Embed(
+                title="🔢 Counting Goal Changed",
+                description=f"The goal has been updated to count to **{maximum}**!",
+                color=discord.Color.from_rgb(0, 191, 255)  # Frostline blue
+            )
+            update_embed.add_field(name="Current Count", value=str(current_count), inline=True)
+            update_embed.add_field(name="Next Number", value=str(current_count + 1), inline=True)
+            update_embed.set_footer(text="Continue counting from where you left off")
+            
+            await channel.send(embed=update_embed)
+        
+    except Exception as e:
+        logger.error(f"Error setting count maximum: {e}")
+        await interaction.response.send_message(f"Error setting count maximum: {str(e)}", ephemeral=True)
 
 if __name__ == "__main__":
     bot.run(TOKEN)

@@ -27,6 +27,11 @@ FrostMod V2 is a powerful, scalable Discord moderation bot built for Frostline S
 - **Ticket Tracking**: All ticket actions are logged in the database for auditing
 - **User-Friendly Interface**: Clean embeds and intuitive button interactions
 
+### Engagement & Activities
+- **Counting Game**: Interactive counting challenge for server members
+- **Progress Tracking**: Count resets if a user breaks the sequence
+- **Customizable Goals**: Set counting targets from 1 to 1000
+
 ### Technical Features
 - **Slash Commands**: Modern Discord interaction system
 - **PostgreSQL Database**: Reliable data storage for all bot features
@@ -75,6 +80,8 @@ FrostMod V2 is a powerful, scalable Discord moderation bot built for Frostline S
 - **/coinflip** — Flip a coin and get heads or tails
 - **/roll [dice] [sides]** — Roll dice with customizable count and sides
 - **/joke** — Get a random joke
+- **/countingchannel <channel>** — Set up a channel for the counting game
+- **/maxcount <1-1000>** — Set the maximum target for the counting game
 
 *All configuration and moderation commands require Administrator permission or the server's mod role (set with /mrole).*
 
@@ -99,5 +106,6 @@ FrostMod requires the following permissions to function properly:
 4. **Set up welcome system** with `/welcome #welcome-channel` and `/wmessage Welcome {user} to {servername}!`
 5. **Enable tickets** with `/ticketchannel #support-channel`
 6. **Set up birthdays** with `/bdaychannel #birthdays-channel`
+7. **Enable the counting game** with `/countingchannel #counting-channel`
 
 Once configured, all features will be active and ready to use!
