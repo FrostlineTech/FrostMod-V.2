@@ -736,7 +736,7 @@ async def status(interaction: discord.Interaction):
     embed.add_field(name="Uptime", value=uptime, inline=False)
     
     # Add the bot start time in the footer (Texas time)
-    embed.set_footer(text=f"Bot started: {bot.start_time.strftime('%Y-%m-%d %H:%M:%S')} CT")
+    embed.set_footer(text=f"Bot started: {bot.start_time.strftime('%Y-%m-%d %H:%M:%S')} CT | Powered by Frostline Solutions LLC")
     
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -1110,89 +1110,71 @@ async def avatar(interaction: discord.Interaction, user: discord.User = None):
 async def help_command(interaction: discord.Interaction):
     """Display a comprehensive help menu with all available commands."""
     embed = discord.Embed(
-        title="❄️ FrostMod Command Guide",
+        title="❄️ FrostMod Help Center",
         description="""
-        **Welcome to FrostMod** - Your complete server management solution!
-        
-        This guide shows all available commands organized by category.
-        
-        **🔹 Command Format:**
-        • `/command` - Type these in chat or slash command menu
-        • `<required>` - Parameters you must provide
-        • `[optional]` - Parameters that have default values
-        
-        **Need help?** Contact a server admin or use `/frosthelp` to set up a permanent command center.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+Welcome to **FrostMod**! Here are all the commands you can use.
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+> **Tip:** Use `/command` in chat. `<angle brackets>` = required, `[square brackets]` = optional.
         """,
-        color=discord.Color.from_rgb(65, 105, 225)  # Royal blue for a clean, professional look
+        color=discord.Color.from_rgb(0, 183, 255)  # Frost/cyan blue
     )
-    
-    # Add bot avatar and styling
     embed.set_thumbnail(url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
-    embed.set_author(name="FrostMod v2.0", icon_url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
 
-    # Server Configuration Commands - Enhanced descriptions
+    # Server Configuration Commands
     config_cmds = (
-        "**⚙️ Server Configuration**\n\n"
-        "`/mrole <role>` ⭐\n*Assigns a role that can use admin commands without admin permissions.*\nGreat for creating moderator teams without full admin access.\n\n"
-        "`/filter <level>` 🛡️\n*Sets content filtering level for auto-moderation.*\nChoose from: `strict` (blocks most offensive terms), `moderate` (standard protection), or `light` (minimal filtering).\n\n"
-        "`/welcomechannel <channel>` 👋\n*Sets where new member welcome messages appear.*\nNew members will be greeted automatically in this channel.\n\n"
-        "`/wmessage <message>` ✏️\n*Customizes the welcome message text.*\nSpecial tags: `{user}` mentions the new member, `{membercount}` shows total members, `{servername}` displays server name.\n\n"
-        "`/joinrole <role>` 🏷️\n*Automatically assigns this role to new members.*\nPerfect for giving access to basic channels or starter roles.\n\n"
-        "`/logschannel <channel>` 📋\n*Sets where moderation and event logs appear.*\nTracks message deletions, member joins/leaves, warnings, and other important server events.\n\n"
-        "`/ticketchannel <channel>` 🎫\n*Creates a help ticket system in the specified channel.*\nMembers can create private channels to request help from staff.\n\n"
-        "`/bdaychannel <channel>` 🎂\n*Sets where birthday announcements appear.*\nAutomatic birthday celebrations for your members!"
+        "⚙️ **/mrole** `<role>`\nSet the moderator role for admin commands.\n\n"
+        "🔍 **/filter** `<level>`\nSet chat filter level (light, moderate, strict).\n\n"
+        "👋 **/welcome** `<channel>`\nSet the welcome channel for new members.\n\n"
+        "💬 **/wmessage** `<message>`\nSet the welcome message. Use `{user}`, `{membercount}`, `{servername}`.\n\n"
+        "🎭 **/joinrole** `<role>`\nSet the role automatically assigned to new members.\n\n"
+        "📋 **/logschannel** `<channel>`\nSet the channel for event and moderation logs.\n\n"
+        "🎫 **/ticketchannel** `<channel>`\nSet the channel for ticket creation.\n\n"
+        "🎉 **/bdaychannel** `<channel>`\nSet the birthday announcement channel."
     )
 
-    # Moderation Commands - Enhanced descriptions
+    # Moderation Commands
     mod_cmds = (
-        "**🛡️ Moderation Tools**\n\n"
-        "`/warn <user> <reason>` ⚠️\n*Issues a formal warning to a user.*\nWarnings are logged in the database and can be reviewed later. Users are notified via DM.\n\n"
-        "`/warns <user>` 📝\n*Displays all warnings for a specific user.*\nShows warning dates, reasons, and who issued them.\n\n"
-        "`/delwarns <user> [count]>` 🗑️\n*Removes warnings from a user's record.*\nSpecify a count to remove that many recent warnings, or removes all if count not specified.\n\n"
-        "`/purge <amount>` 🧹\n*Mass deletes recent messages in the current channel.*\nCan remove up to 100 messages at once. Messages must be under 14 days old.\n\n"
-        "`/purgeuser <user> <amount>` 🧹\n*Deletes messages from a specific user only.*\nSelectively removes a user's messages without affecting others."
+        "🛡️ **/warn** `<user>` `<reason>`\nWarn a user and log the reason.\n\n"
+        "🛡️ **/warns** `<user>`\nView all warnings for a specific user.\n\n"
+        "🛡️ **/delwarns** `<user>`\nDelete all warnings for a specific user.\n\n"
+        "🧹 **/purge** `<amount>`\nDelete up to 100 messages from the current channel.\n\n"
+        "🧹 **/purgeuser** `<user>` `<amount>`\nDelete up to 100 messages from a specific user."
     )
 
-    # Birthday System Commands - Enhanced descriptions
+    # Birthday System Commands
     birthday_cmds = (
-        "**🎉 Birthday System**\n\n"
-        "`/setbirthday <date>` 🎂\n*Sets your birthday for automatic celebrations.*\nFormat: MM-DD (e.g., 05-15 for May 15th). Year is optional.\n\n"
-        "`/delbday <user>` 🗑️\n*Removes birthday data from the system.*\nMembers can delete their own birthdays, while admins can delete anyone's.\n\n"
-        "`/testbirthdays` ✅\n*Simulates birthday announcements for testing.*\nSends test birthday messages to the configured birthday channel."
+        "🎂 **/setbirthday** `<mm/dd/yyyy>`\nSet your birthday for server announcements.\n\n"
+        "🎂 **/delbday** `<user>`\nDelete a birthday (users can delete their own; admins can delete any).\n\n"
+        "🎉 **/testbirthdays**\nTest birthday announcements for the current day."
     )
 
-    # Utility Commands - Enhanced descriptions
-    utility_cmds = (
-        "**🛠️ Utility Commands**\n\n"
-        "`/status` 📊\n*Shows real-time bot performance statistics.*\nDisplays ping times, uptime duration, and connection quality.\n\n"
-        "`/help` 📚\n*Displays this command guide directly to you.*\nQuick reference for all commands (visible only to you).\n\n"
-        "`/userinfo [user]` 👤\n*Shows detailed profile information about a user.*\nDisplays join dates, roles, account age, and other useful member data.\n\n"
-        "`/serverinfo` 🏠\n*Provides comprehensive server statistics.*\nShows member counts, channel information, role details, and server settings.\n\n"
-        "`/avatar [user]` 🖼️\n*Displays a user's avatar in full resolution.*\nPerfect for viewing profile pictures in their original size and quality."
+    # Utility Commands
+    util_cmds = (
+        "🖼️ **/avatar** `[user]`\nShow a user's profile picture.\n\n"
+        "📈 **/status**\nDisplay bot uptime and latency.\n\n"
+        "🆘 **/support**\nGet a link to the Frostline support server.\n\n"
+        "❄️ **/help**\nShow this help message."
     )
-
-    # Fun Commands - Enhanced descriptions
-    fun_cmds = (
-        "**🎮 Fun & Games**\n\n"
-        "`/roll [dice] [sides]` 🎲\n*Rolls virtual dice with customizable settings.*\nDefault: 1d6 (one six-sided die). Examples: `/roll 2 20` rolls two 20-sided dice.\n\n"
-        "`/joke` 😄\n*Shares a random joke from our collection.*\nGreat for lightening the mood or breaking the ice!\n\n"
-        "`/8ball <question>` 🎱\n*Consults the mystical 8-ball for answers.*\nAsk a yes/no question and receive a mysteriously accurate (or not) prediction."
-    )
-
-    # Add fields to embed with improved visual spacing
-    embed.add_field(name="​", value=config_cmds, inline=False)  # Section already has a header in the text
-    embed.add_field(name="​", value=mod_cmds, inline=False)      # Using empty field names since headers
-    embed.add_field(name="​", value=birthday_cmds, inline=False) # are included in the text content
-    embed.add_field(name="​", value=utility_cmds, inline=False)
-    embed.add_field(name="​", value=fun_cmds, inline=False)
     
-    # Add a divider and tip at the bottom
-    embed.add_field(name="​", value="━━━━━━━━━━━━━━━━━━━━━━━━━━", inline=False)
-    embed.add_field(name="📌 Pro Tip", value="*Admins can use `/frosthelp <channel>` to create a permanent command center in any channel!*", inline=False)
+    # Fun Commands
+    fun_cmds = (
+        "💃 **/twerkz**\nGenerates a random twerk message.\n\n"
+        "🎱 **/8ball** `<question>`\nAsk the magic 8-ball a question.\n\n"
+        "🪙 **/coinflip**\nFlip a coin and get heads or tails.\n\n"
+        "🎲 **/roll** `[dice]` `[sides]`\nRoll dice with customizable count and sides.\n\n"
+        "😂 **/joke**\nGet a random joke."
+    )
 
-    # Add a stylish footer
-    embed.set_footer(text="Powered by Frostline Solutions LLC | FrostMod v2.0", icon_url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
-    embed.timestamp = datetime.datetime.now()
+    embed.add_field(name="━━━━━━━━ ⚙️ Server Configuration ━━━━━━━━", value=config_cmds, inline=False)
+    embed.add_field(name="━━━━━━━━ 🛡️ Moderation Tools ━━━━━━━━", value=mod_cmds, inline=False)
+    embed.add_field(name="━━━━━━━━ 🎂 Birthday System ━━━━━━━━", value=birthday_cmds, inline=False)
+    embed.add_field(name="━━━━━━━━ 🔧 Utility Commands ━━━━━━━━", value=util_cmds, inline=False)
+    embed.add_field(name="━━━━━━━━ 🎉 Fun Commands ━━━━━━━━", value=fun_cmds, inline=False)
+    
+    embed.set_footer(text="FrostMod • Need help? Use /support or join the support server!", icon_url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -1754,7 +1736,7 @@ async def twerkz(interaction: discord.Interaction):
         description=message,
         color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
     )
-    embed.set_footer(text="Powered by Frostline Solutions LLC | FrostMod v2.0")
+    embed.set_footer(text="Frostline Entertainment | Powered by FrostMod")
     
     # Send the message
     await interaction.response.send_message(embed=embed)
@@ -1793,7 +1775,7 @@ async def eightball(interaction: discord.Interaction, question: str):
         description=f"**Question:** {question}\n\n**Answer:** {response}",
         color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
     )
-    embed.set_footer(text="Powered by Frostline Solutions LLC | FrostMod v2.0")
+    embed.set_footer(text="Frostline Entertainment | Powered by Frostline Solutions LLC")
     
     await interaction.response.send_message(embed=embed)
 
@@ -1807,7 +1789,7 @@ async def coinflip(interaction: discord.Interaction):
         description=f"The coin landed on: **{result}**!",
         color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
     )
-    embed.set_footer(text="Powered by Frostline Solutions LLC | FrostMod v2.0")
+    embed.set_footer(text="Frostline Entertainment | Powered by Frostline Solutions LLC")
     
     await interaction.response.send_message(embed=embed)
 
@@ -1841,7 +1823,7 @@ async def roll(interaction: discord.Interaction, dice: int = 1, sides: int = 6):
         description=result_text,
         color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
     )
-    embed.set_footer(text="Powered by Frostline Solutions LLC | FrostMod v2.0")
+    embed.set_footer(text="Frostline Entertainment | Powered by Frostline Solutions LLC")
     
     await interaction.response.send_message(embed=embed)
 
@@ -1871,7 +1853,7 @@ async def joke(interaction: discord.Interaction):
         description=joke,
         color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
     )
-    embed.set_footer(text="Powered by Frostline Solutions LLC | FrostMod v2.0")
+    embed.set_footer(text="Frostline Entertainment | Powered by Frostline Solutions LLC")
     
     await interaction.response.send_message(embed=embed)
 
@@ -1885,92 +1867,126 @@ async def frosthelp(interaction: discord.Interaction, channel: discord.TextChann
         return
     
     try:
-        # Create enhanced comprehensive help embed with the new design
+        # Create comprehensive help embed with prettier design
         embed = discord.Embed(
             title="❄️ FrostMod Command Center",
             description="""
-            **Welcome to the FrostMod Command Center!**
-            
-            This is your server's permanent guide to all FrostMod commands.
-            Reference this resource whenever you need help using any feature.
-            
-            **🔹 Command Format:**
-            • `/command` - Type these in chat or slash command menu
-            • `<required>` - Parameters you must provide
-            • `[optional]` - Parameters that have default values
-            """,
-            color=discord.Color.from_rgb(65, 105, 225)  # Royal blue for a clean, professional look
+:wave: **Welcome to the FrostMod Command Center!**
+This guide provides comprehensive information on all available commands.
+Find the perfect tool for your needs, organized by category below.
+
+:shield: **━━━━ MODERATION TOOLS ━━━━**
+
+**`/warn`** `<user> <reason>`
+> :warning: Issue an official warning to a user that gets logged in the database.
+> Warns are tracked and can be viewed by moderators at any time.
+
+**`/warns`** `<user>`
+> :page_facing_up: View a user's complete warning history with reasons and timestamps.
+> Provides helpful context for moderator decisions.
+
+**`/delwarns`** `<user> <count>`
+> :wastebasket: Remove a specific number of warnings from a user's record.
+> Removes the most recent warnings first.
+
+**`/purge`** `<amount>`
+> :broom: Quickly delete multiple messages from the current channel.
+> Can remove up to 100 messages that are less than 14 days old.
+
+**`/purgeuser`** `<user> <amount>`
+> :broom: Delete messages from a specific user within the channel.
+> Great for targeted cleanup of problematic content.
+
+**`/filter`** `<level>`
+> :no_entry: Set the server's word filter strength level.
+> Options: strict (most words filtered), moderate, or light (minimal filtering).
+
+**`/mrole`** `<role>`
+> :key: Designate which role has moderation permissions for bot commands.
+> Users with this role can use admin-level commands.
+
+:gear: **━━━━ SERVER CONFIGURATION ━━━━**
+
+**`/welcomechannel`** `<channel>`
+> :door: Set where new member welcome messages will be displayed.
+> Creates a personalized greeting when members join.
+
+**`/leavechannel`** `<channel>`
+> :wave: Configure which channel shows departure messages.
+> Notifies when members leave the server.
+
+**`/logschannel`** `<channel>`
+> :pencil: Designate where server activity logs will be sent.
+> Tracks moderation actions, channel changes, and more.
+
+**`/joinrole`** `<role>`
+> :label: Set an automatic role assigned to new members upon joining.
+> Streamlines the onboarding process for new users.
+
+**`/ticketchannel`** `<channel>`
+> :ticket: Configure where users can create support tickets.
+> Creates an interactive interface for users to get help.
+
+:birthday: **━━━━ BIRTHDAY SYSTEM ━━━━**
+
+**`/setbirthday`** `<date>`
+> :cake: Register your birthday to receive server celebrations.
+> Format: MM-DD (example: 05-15 for May 15th).
+
+**`/bdaychannel`** `<channel>`
+> :partying_face: Set where birthday announcements will appear.
+> Members with birthdays get special recognition.
+
+**`/delbday`** `<user>`
+> :x: Remove a birthday from the system.
+> Users can delete their own; admins can delete any.
+
+:wrench: **━━━━ UTILITY FEATURES ━━━━**
+
+**`/status`**
+> :signal_strength: Check the bot's operational status and response time.
+> Shows ping, uptime, and system performance metrics.
+
+**`/help`**
+> :question: Get a quick reference of commands sent privately to you.
+> Provides a condensed list for quick reference.
+
+**`/userinfo`** `<user>`
+> :bust_in_silhouette: View detailed information about a server member.
+> Shows join date, roles, status, and more.
+
+**`/serverinfo`**
+> :bar_chart: Display comprehensive statistics about the server.
+> Includes member count, channel info, and creation date.
+
+**`/avatar`** `<user>`
+> :frame_photo: Display a user's profile picture in full resolution.
+> Perfect for seeing avatars in detail.
+
+:game_die: **━━━━ FUN COMMANDS ━━━━**
+
+**`/roll`** `<dice> <sides>`
+> :game_die: Roll virtual dice with customizable parameters.
+> Roll between 1-10 dice with 2-100 sides each.
+
+**`/joke`**
+> :laughing: Receive a random joke from the bot's collection.
+> Great for lightening the mood!
+
+**`/8ball`** `<question>`
+> :8ball: Ask a question and receive a mystical answer.
+> The magic 8-ball knows all (or pretends to)!
+
+:bulb: **Need additional help?** Contact a server administrator or moderator.
+""",
+            color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
         )
         
-        # Add bot avatar and styling
-        embed.set_thumbnail(url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
-        embed.set_author(name="FrostMod v2.0", icon_url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
-
-        # Server Configuration Commands - Enhanced descriptions
-        config_cmds = (
-            "**⚙️ Server Configuration**\n\n"
-            "`/mrole <role>` ⭐\n*Assigns a role that can use admin commands without admin permissions.*\nGreat for creating moderator teams without full admin access.\n\n"
-            "`/filter <level>` 🛡️\n*Sets content filtering level for auto-moderation.*\nChoose from: `strict` (blocks most offensive terms), `moderate` (standard protection), or `light` (minimal filtering).\n\n"
-            "`/welcomechannel <channel>` 👋\n*Sets where new member welcome messages appear.*\nNew members will be greeted automatically in this channel.\n\n"
-            "`/wmessage <message>` ✏️\n*Customizes the welcome message text.*\nSpecial tags: `{user}` mentions the new member, `{membercount}` shows total members, `{servername}` displays server name.\n\n"
-            "`/joinrole <role>` 🏷️\n*Automatically assigns this role to new members.*\nPerfect for giving access to basic channels or starter roles.\n\n"
-            "`/logschannel <channel>` 📋\n*Sets where moderation and event logs appear.*\nTracks message deletions, member joins/leaves, warnings, and other important server events.\n\n"
-            "`/ticketchannel <channel>` 🎫\n*Creates a help ticket system in the specified channel.*\nMembers can create private channels to request help from staff.\n\n"
-            "`/bdaychannel <channel>` 🎂\n*Sets where birthday announcements appear.*\nAutomatic birthday celebrations for your members!"
-        )
-
-        # Moderation Commands - Enhanced descriptions
-        mod_cmds = (
-            "**🛡️ Moderation Tools**\n\n"
-            "`/warn <user> <reason>` ⚠️\n*Issues a formal warning to a user.*\nWarnings are logged in the database and can be reviewed later. Users are notified via DM.\n\n"
-            "`/warns <user>` 📝\n*Displays all warnings for a specific user.*\nShows warning dates, reasons, and who issued them.\n\n"
-            "`/delwarns <user> [count]>` 🗑️\n*Removes warnings from a user's record.*\nSpecify a count to remove that many recent warnings, or removes all if count not specified.\n\n"
-            "`/purge <amount>` 🧹\n*Mass deletes recent messages in the current channel.*\nCan remove up to 100 messages at once. Messages must be under 14 days old.\n\n"
-            "`/purgeuser <user> <amount>` 🧹\n*Deletes messages from a specific user only.*\nSelectively removes a user's messages without affecting others."
-        )
-
-        # Birthday System Commands - Enhanced descriptions
-        birthday_cmds = (
-            "**🎉 Birthday System**\n\n"
-            "`/setbirthday <date>` 🎂\n*Sets your birthday for automatic celebrations.*\nFormat: MM-DD (e.g., 05-15 for May 15th). Year is optional.\n\n"
-            "`/delbday <user>` 🗑️\n*Removes birthday data from the system.*\nMembers can delete their own birthdays, while admins can delete anyone's.\n\n"
-            "`/testbirthdays` ✅\n*Simulates birthday announcements for testing.*\nSends test birthday messages to the configured birthday channel."
-        )
-
-        # Utility Commands - Enhanced descriptions
-        utility_cmds = (
-            "**🛠️ Utility Commands**\n\n"
-            "`/status` 📊\n*Shows real-time bot performance statistics.*\nDisplays ping times, uptime duration, and connection quality.\n\n"
-            "`/help` 📚\n*Displays this command guide directly to you.*\nQuick reference for all commands (visible only to you).\n\n"
-            "`/userinfo [user]` 👤\n*Shows detailed profile information about a user.*\nDisplays join dates, roles, account age, and other useful member data.\n\n"
-            "`/serverinfo` 🏠\n*Provides comprehensive server statistics.*\nShows member counts, channel information, role details, and server settings.\n\n"
-            "`/avatar [user]` 🖼️\n*Displays a user's avatar in full resolution.*\nPerfect for viewing profile pictures in their original size and quality."
-        )
-
-        # Fun Commands - Enhanced descriptions
-        fun_cmds = (
-            "**🎮 Fun & Games**\n\n"
-            "`/roll [dice] [sides]` 🎲\n*Rolls virtual dice with customizable settings.*\nDefault: 1d6 (one six-sided die). Examples: `/roll 2 20` rolls two 20-sided dice.\n\n"
-            "`/joke` 😄\n*Shares a random joke from our collection.*\nGreat for lightening the mood or breaking the ice!\n\n"
-            "`/8ball <question>` 🎱\n*Consults the mystical 8-ball for answers.*\nAsk a yes/no question and receive a mysteriously accurate (or not) prediction."
-        )
+        # Add a thumbnail to make the embed more visually appealing
+        embed.set_thumbnail(url="https://i.imgur.com/tLXG6Rx.png")  # FrostMod logo placeholder - replace with actual logo URL
         
-        # Add fields to embed with improved visual spacing
-        embed.add_field(name="​", value=config_cmds, inline=False)  # Section already has a header in the text
-        embed.add_field(name="​", value=mod_cmds, inline=False)      # Using empty field names since headers
-        embed.add_field(name="​", value=birthday_cmds, inline=False) # are included in the text content
-        embed.add_field(name="​", value=utility_cmds, inline=False)
-        embed.add_field(name="​", value=fun_cmds, inline=False)
-        
-        # Add information about this help center at the bottom
-        embed.add_field(name="​", value="━━━━━━━━━━━━━━━━━━━━━━━━━━", inline=False)
-        embed.add_field(name="📃 About This Help Center", 
-                      value="*This is a permanent help resource. Server staff can update it at any time with the `/frosthelp` command.*", 
-                      inline=False)
-        
-        # Add stylish footer with timestamp
-        embed.set_footer(text="FrostMod v2.0 | Powered by Frostline Solutions LLC", 
-                       icon_url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
+        # Updated footer with new branding
+        embed.set_footer(text="FrostMod v2.0 | Powered by Frostline Solutions LLC")
         embed.timestamp = datetime.datetime.now()
         
         # Send the help embed to the specified channel
@@ -2022,6 +2038,175 @@ async def is_moderator(interaction):
     except Exception as e:
         logger.error(f"Error checking moderator status: {e}")
         return False
+
+@bot.tree.command(name="serverinfo", description="Display comprehensive information about this server")
+async def serverinfo(interaction: discord.Interaction):
+    """Display detailed information and statistics about the current server."""
+    guild = interaction.guild
+    
+    # Get creation date and format it
+    created_at = guild.created_at.strftime("%Y-%m-%d %H:%M:%S")
+    # Calculate server age
+    now = datetime.datetime.now(datetime.timezone.utc)
+    age = now - guild.created_at
+    days = age.days
+    years, days = divmod(days, 365)
+    months, days = divmod(days, 30)
+    age_str = f"{years} years, {months} months, {days} days"
+    
+    # Get member statistics
+    total_members = guild.member_count
+    bot_count = len([m for m in guild.members if m.bot])
+    human_count = total_members - bot_count
+    online_count = len([m for m in guild.members if m.status != discord.Status.offline]) if guild.chunked else "Unknown"
+    
+    # Get channel statistics
+    text_channels = len(guild.text_channels)
+    voice_channels = len(guild.voice_channels)
+    categories = len(guild.categories)
+    total_channels = text_channels + voice_channels + categories
+    
+    # Get role count (excluding @everyone)
+    role_count = len(guild.roles) - 1
+    
+    # Get emoji statistics
+    emoji_count = len(guild.emojis)
+    emoji_limit = guild.emoji_limit
+    animated_emoji = len([e for e in guild.emojis if e.animated])
+    static_emoji = emoji_count - animated_emoji
+    
+    # Get boosting info
+    premium_tier = str(guild.premium_tier)
+    premium_subscribers = len(guild.premium_subscribers)
+    
+    # Get verification level
+    verification_level = str(guild.verification_level).capitalize()
+    
+    # Get content filter level
+    explicit_content_filter = str(guild.explicit_content_filter).replace('_', ' ').capitalize()
+    
+    # Get features
+    features = ", ".join(guild.features).replace("_", " ").title() if guild.features else "None"
+    
+    # Get server owner
+    owner = guild.owner
+    
+    # Create the embed
+    embed = discord.Embed(
+        title=f"❄️ {guild.name} Server Information",
+        description=f"Detailed statistics and information about this server.",
+        color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
+    )
+    
+    # Add server icon as thumbnail if available
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    
+    # Add general information
+    embed.add_field(name="⏰ Created On", value=f"{created_at}\n({age_str} ago)", inline=False)
+    embed.add_field(name="👑 Owner", value=f"{owner.mention if owner else 'Unknown'}", inline=True)
+    embed.add_field(name="🌐 Region", value=f"Discord Managed", inline=True)
+    embed.add_field(name="🔒 Verification", value=verification_level, inline=True)
+    
+    # Add server stats
+    embed.add_field(name="👥 Members", value=f"Total: {total_members}\nHumans: {human_count}\nBots: {bot_count}", inline=True)
+    embed.add_field(name="💬 Channels", value=f"Total: {total_channels}\nText: {text_channels}\nVoice: {voice_channels}\nCategories: {categories}", inline=True)
+    embed.add_field(name="🌟 Emojis", value=f"Total: {emoji_count}/{emoji_limit}\nStatic: {static_emoji}\nAnimated: {animated_emoji}", inline=True)
+    
+    # Add more server info
+    embed.add_field(name="🔰 Roles", value=f"{role_count}", inline=True)
+    embed.add_field(name="💠 Boost Level", value=f"Level {premium_tier}\nBoosters: {premium_subscribers}", inline=True)
+    embed.add_field(name="🔞 Content Filter", value=explicit_content_filter, inline=True)
+    
+    if features != "None":
+        embed.add_field(name="✨ Features", value=features, inline=False)
+    
+    # Add server ID
+    embed.set_footer(text=f"Server ID: {guild.id} | Powered by Frostline Solutions LLC")
+    embed.timestamp = now
+    
+    # Get database stats if available
+    try:
+        async with bot.db_pool.acquire() as conn:
+            # Get warning count
+            warn_count = await conn.fetchval(
+                '''SELECT COUNT(*) FROM warns WHERE guild_id = $1''',
+                guild.id
+            )
+            
+            # Get FrostMod configuration info
+            config = await conn.fetchrow(
+                '''SELECT 
+                    welcome_channel_id, 
+                    leave_channel_id, 
+                    logs_channel_id, 
+                    join_role_id, 
+                    ticket_channel_id, 
+                    birthday_channel_id,
+                    filter_level,
+                    mod_role_id
+                FROM servers WHERE guild_id = $1''',
+                guild.id
+            )
+            
+            if config:
+                frostmod_config = []
+                
+                if config['welcome_channel_id']:
+                    channel = guild.get_channel(config['welcome_channel_id'])
+                    if channel:
+                        frostmod_config.append(f"Welcome Channel: {channel.mention}")
+                        
+                if config['leave_channel_id']:
+                    channel = guild.get_channel(config['leave_channel_id'])
+                    if channel:
+                        frostmod_config.append(f"Leave Channel: {channel.mention}")
+                        
+                if config['logs_channel_id']:
+                    channel = guild.get_channel(config['logs_channel_id'])
+                    if channel:
+                        frostmod_config.append(f"Logs Channel: {channel.mention}")
+                        
+                if config['ticket_channel_id']:
+                    channel = guild.get_channel(config['ticket_channel_id'])
+                    if channel:
+                        frostmod_config.append(f"Ticket Channel: {channel.mention}")
+                        
+                if config['birthday_channel_id']:
+                    channel = guild.get_channel(config['birthday_channel_id'])
+                    if channel:
+                        frostmod_config.append(f"Birthday Channel: {channel.mention}")
+                
+                if config['join_role_id']:
+                    role = guild.get_role(config['join_role_id'])
+                    if role:
+                        frostmod_config.append(f"Join Role: {role.mention}")
+                        
+                if config['mod_role_id']:
+                    role = guild.get_role(config['mod_role_id'])
+                    if role:
+                        frostmod_config.append(f"Mod Role: {role.mention}")
+                        
+                if config['filter_level']:
+                    frostmod_config.append(f"Filter Level: {config['filter_level'].capitalize()}")
+                
+                if frostmod_config:
+                    embed.add_field(
+                        name="⚙️ FrostMod Configuration", 
+                        value="\n".join(frostmod_config), 
+                        inline=False
+                    )
+                
+                if warn_count:
+                    embed.add_field(
+                        name="⚠️ Moderation Stats", 
+                        value=f"Total Warnings: {warn_count}", 
+                        inline=False
+                    )
+    except Exception as e:
+        logger.error(f"Error fetching database stats for serverinfo: {e}")
+    
+    await interaction.response.send_message(embed=embed)
 
 if __name__ == "__main__":
     bot.run(TOKEN)
