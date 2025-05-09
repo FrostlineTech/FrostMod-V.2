@@ -32,6 +32,7 @@ OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
+intents.presences = True  # Enable presence intents to see member statuses
 
 # FrostModBot definition
 class FrostModBot(commands.Bot):
@@ -2205,6 +2206,150 @@ async def serverinfo(interaction: discord.Interaction):
                     )
     except Exception as e:
         logger.error(f"Error fetching database stats for serverinfo: {e}")
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="userinfo", description="View detailed information about a server member")
+async def userinfo(interaction: discord.Interaction, user: discord.Member = None):
+    """:bust_in_silhouette: View detailed information about a server member.
+    Shows join date, roles, status, and more."""
+    # If no user is specified, use the command invoker
+    if user is None:
+        user = interaction.user
+    
+    # Get current time for calculating durations
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
+    # Get account creation date and format it
+    created_at = user.created_at.strftime("%Y-%m-%d %H:%M:%S")
+    account_age = now - user.created_at
+    account_age_days = account_age.days
+    account_years, account_days = divmod(account_age_days, 365)
+    account_months, account_days = divmod(account_days, 30)
+    account_age_str = f"{account_years} years, {account_months} months, {account_days} days"
+    
+    # Get join date and format it
+    joined_at = user.joined_at.strftime("%Y-%m-%d %H:%M:%S") if user.joined_at else "Unknown"
+    if user.joined_at:
+        server_age = now - user.joined_at
+        server_age_days = server_age.days
+        server_years, server_days = divmod(server_age_days, 365)
+        server_months, server_days = divmod(server_days, 30)
+        server_age_str = f"{server_years} years, {server_months} months, {server_days} days"
+    else:
+        server_age_str = "Unknown"
+    
+    # Get user status and activity if available
+    status = str(user.status).capitalize() if hasattr(user, 'status') and user.status else "Unknown"
+    activity = ""
+    if user.activities:
+        for act in user.activities:
+            if isinstance(act, discord.CustomActivity) and act.name:
+                activity = f"Custom Status: {act.name}"
+                break
+            elif isinstance(act, discord.Activity):
+                activity_type = str(act.type).split('.')[-1].capitalize()
+                activity = f"{activity_type}: {act.name}"
+                break
+    
+    # Get user roles (excluding @everyone)
+    roles = [role.mention for role in user.roles if role.name != "@everyone"]
+    roles_str = ", ".join(roles) if roles else "No roles"
+    
+    # Create embed
+    embed = discord.Embed(
+        title=f"User Information for {user.display_name}",
+        color=user.color if user.color != discord.Color.default() else discord.Color.from_rgb(0, 191, 255)
+    )
+    
+    # Add user avatar
+    if user.avatar:
+        embed.set_thumbnail(url=user.avatar.url)
+    
+    # Add banner if available
+    if hasattr(user, 'banner') and user.banner:
+        embed.set_image(url=user.banner.url)
+    
+    # Basic user info
+    embed.add_field(name="📛 Username", value=f"{user.name}", inline=True)
+    if user.display_name != user.name:
+        embed.add_field(name="🏷️ Display Name", value=f"{user.display_name}", inline=True)
+    
+    embed.add_field(name="🤖 Bot", value="Yes" if user.bot else "No", inline=True)
+    
+    # Membership details
+    embed.add_field(name="🔰 Account Created", value=f"{created_at}\n({account_age_str} ago)", inline=False)
+    embed.add_field(name="📆 Joined Server", value=f"{joined_at}\n({server_age_str} ago)", inline=False)
+    
+    # Status and activity
+    if status != "Unknown":
+        embed.add_field(name="🔵 Status", value=status, inline=True)
+    if activity:
+        embed.add_field(name="🎮 Activity", value=activity, inline=True)
+    
+    # Boosting status
+    if hasattr(user, 'premium_since') and user.premium_since:
+        boosting_since = user.premium_since.strftime("%Y-%m-%d")
+        boost_age = now - user.premium_since
+        boost_days = boost_age.days
+        embed.add_field(name="💠 Server Booster", value=f"Since {boosting_since} ({boost_days} days)", inline=False)
+    
+    # Roles section
+    if len(roles) > 0:
+        # If there are too many roles, summarize
+        if len(roles_str) > 1024:
+            embed.add_field(name=f"🏅 Roles ({len(roles)})", value=f"{len(roles)} roles (too many to display)", inline=False)
+        else:
+            embed.add_field(name=f"🏅 Roles ({len(roles)})", value=roles_str, inline=False)
+    
+    # Get user permissions if available
+    if interaction.guild:
+        permissions = user.guild_permissions
+        key_perms = []
+        if permissions.administrator:
+            key_perms.append("Administrator")
+        elif permissions.manage_guild:
+            key_perms.append("Manage Server")
+        elif permissions.manage_roles:
+            key_perms.append("Manage Roles")
+        elif permissions.manage_channels:
+            key_perms.append("Manage Channels")
+        elif permissions.manage_messages:
+            key_perms.append("Manage Messages")
+        elif permissions.moderate_members:
+            key_perms.append("Moderate Members")
+            
+        if key_perms:
+            embed.add_field(name="🔑 Key Permissions", value=", ".join(key_perms), inline=False)
+    
+    # Get database info if available
+    try:
+        async with bot.db_pool.acquire() as conn:
+            # Get warning count for this user
+            warn_count = await conn.fetchval(
+                '''SELECT COUNT(*) FROM warns WHERE guild_id = $1 AND user_id = $2''',
+                interaction.guild.id, user.id
+            )
+            
+            # Get birthday if set
+            birthday = await conn.fetchval(
+                '''SELECT birthday FROM birthdays WHERE guild_id = $1 AND user_id = $2''',
+                interaction.guild.id, user.id
+            )
+            
+            # Add warning count if any
+            if warn_count and warn_count > 0:
+                embed.add_field(name="⚠️ Warnings", value=str(warn_count), inline=True)
+            
+            # Add birthday if set
+            if birthday:
+                embed.add_field(name="🎂 Birthday", value=birthday, inline=True)
+    except Exception as e:
+        logger.error(f"Error fetching database info for userinfo: {e}")
+    
+    # Add user ID in footer
+    embed.set_footer(text=f"User ID: {user.id} | Powered by Frostline Solutions LLC")
+    embed.timestamp = now
     
     await interaction.response.send_message(embed=embed)
 
