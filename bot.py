@@ -40,8 +40,8 @@ class FrostModBot(commands.Bot):
         self.db_pool = None
         # Store bot start time as UTC datetime
         import datetime
-        # Provided local time is 2025-04-27T17:57:20-05:00
-        self.start_time = datetime.datetime(2025, 4, 27, 22, 57, 20, tzinfo=datetime.timezone.utc)
+        # Record actual start time when bot initializes
+        self.start_time = datetime.datetime.now(datetime.timezone.utc)
 
     async def setup_hook(self):
         # Register slash commands globally
@@ -673,8 +673,17 @@ async def create_new_ticket(interaction):
 async def status(interaction: discord.Interaction):
     """Show bot ping and uptime."""
     import datetime
-    # Ping in ms
-    ping = round(bot.latency * 1000)
+    import time
+    
+    # More accurate ping calculation using round-trip time
+    start_time = time.perf_counter()
+    await interaction.response.defer(ephemeral=True)
+    end_time = time.perf_counter()
+    ping = round((end_time - start_time) * 1000)  # More accurate ping in ms
+    
+    # Add WebSocket latency as well for comparison
+    ws_ping = round(bot.latency * 1000)
+    
     # Uptime calculation
     now = datetime.datetime.now(datetime.timezone.utc)
     delta = now - bot.start_time
@@ -682,10 +691,14 @@ async def status(interaction: discord.Interaction):
     hours, remainder = divmod(delta.seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     uptime = f"{days}d {hours}h {minutes}m {seconds}s"
-    embed = discord.Embed(title="Bot Status", color=discord.Color.blue())
-    embed.add_field(name="Ping", value=f"{ping} ms", inline=True)
+    
+    embed = discord.Embed(title="Bot Status", color=discord.Color.blue(), timestamp=now)
+    embed.add_field(name="API Ping", value=f"{ping} ms", inline=True)
+    embed.add_field(name="WebSocket Ping", value=f"{ws_ping} ms", inline=True)
     embed.add_field(name="Uptime", value=uptime, inline=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    embed.set_footer(text=f"Bot started: {bot.start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="mrole", description="Set the moderator role that can use admin commands.")
 @app_commands.describe(role="The role to grant moderator permissions.")
@@ -1617,26 +1630,14 @@ async def on_message(message):
 
 # --- Fun Commands ---
 
-@bot.tree.command(name="twerkz", description="Generates a random twerk message")
+@bot.tree.command(name="twerkz", description="Sends a special twerk message")
 async def twerkz(interaction: discord.Interaction):
-    """Generate a random message from a predefined list of twerk messages."""
-    # List of messages to randomly select from
-    messages = [
-        "die slow rest in piss",
-        "Tristans gay dude",
-        "Twerking in the moonlight",
-        "Shake what your mama gave you",
-        "Is it hot in here or is it just me twerking?",
-        "Drop it like it's hot",
-        "Twerk team captain reporting for duty",
-        "Professional twerker at your service",
-        "Twerk till ya can't twerk no more",
-        "*intense twerking intensifies*"
-    ]
+    """Send 'Tristans gay dude' with a mention to a specific user."""
+    # The user ID to ping
+    user_id = 398244010587848709
     
-    # Randomly select a message
-    import random
-    message = random.choice(messages)
+    # Create the message with the mention
+    message = f"Tristans gay dude <@{user_id}>"
     
     # Send the message
     await interaction.response.send_message(message)
