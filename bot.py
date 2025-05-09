@@ -1154,6 +1154,7 @@ Welcome to **FrostMod**! Here are all the commands you can use.
 
     # Utility Commands
     util_cmds = (
+        "👤 **/userinfo** `[user]`\nView detailed information about a server member.\n\n"
         "🖼️ **/avatar** `[user]`\nShow a user's profile picture.\n\n"
         "📈 **/status**\nDisplay bot uptime and latency.\n\n"
         "🆘 **/support**\nGet a link to the Frostline support server.\n\n"
