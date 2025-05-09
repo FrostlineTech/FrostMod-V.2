@@ -1315,6 +1315,78 @@ async def purgeuser(interaction: discord.Interaction, user: discord.Member, amou
         await interaction.followup.send(f"An error occurred while purging messages: {e}", ephemeral=True)
 
 @bot.event
+async def on_voice_state_update(member, before, after):
+    """Handle voice state update events - log when users join, leave, or move between voice channels."""
+    # Skip updates not related to joining or leaving channels
+    if before.channel == after.channel:
+        return
+    
+    try:
+        # Get guild configuration
+        logs_channel_id = None
+        
+        try:
+            async with bot.db_pool.acquire() as conn:
+                row = await conn.fetchrow('SELECT logs_channel_id FROM servers WHERE guild_id = $1', member.guild.id)
+                if row:
+                    logs_channel_id = row['logs_channel_id']
+        except Exception as e:
+            logger.error(f"Error fetching logs channel for voice state update: {e}")
+            
+        # Create appropriate log message based on the type of change
+        if before.channel is None and after.channel is not None:
+            # User joined a voice channel
+            action = "joined"
+            channel = after.channel
+            logger.info(f"Voice channel: {member} ({member.id}) joined {channel.name} in {member.guild.name}")
+        elif before.channel is not None and after.channel is None:
+            # User left a voice channel
+            action = "left"
+            channel = before.channel
+            logger.info(f"Voice channel: {member} ({member.id}) left {channel.name} in {member.guild.name}")
+        else:
+            # User moved between voice channels
+            action = "moved to"
+            channel = after.channel
+            logger.info(f"Voice channel: {member} ({member.id}) moved from {before.channel.name} to {after.channel.name} in {member.guild.name}")
+        
+        # Send log message to logs channel if configured
+        if logs_channel_id:
+            log_channel = member.guild.get_channel(logs_channel_id)
+            if log_channel:
+                try:
+                    # Create embed for voice channel event
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    
+                    # Set the embed color and title based on the action
+                    embed = discord.Embed(
+                        title=f"🔊 Voice Channel {action.title()}",
+                        color=discord.Color.from_rgb(0, 191, 255),  # Frostline blue
+                        timestamp=now
+                    )
+                    
+                    # Add user info
+                    embed.set_author(name=f"{member.name}", icon_url=member.display_avatar.url)
+                    embed.add_field(name="User", value=f"{member.mention} ({member.id})", inline=False)
+                    
+                    # Add channel info
+                    if action == "moved to":
+                        embed.add_field(name="From Channel", value=f"{before.channel.mention} ({before.channel.name})", inline=True)
+                        embed.add_field(name="To Channel", value=f"{after.channel.mention} ({after.channel.name})", inline=True)
+                    else:
+                        embed.add_field(name="Channel", value=f"{channel.mention} ({channel.name})", inline=False)
+                    
+                    # Set footer
+                    embed.set_footer(text=f"Voice Activity • {member.guild.name}")
+                    
+                    await log_channel.send(embed=embed)
+                except Exception as e:
+                    logger.error(f"Error sending voice channel log for {member}: {e}")
+    
+    except Exception as e:
+        logger.error(f"Error processing voice state update for {member} in {member.guild.name}: {e}")
+
+@bot.event
 async def on_member_remove(member):
     """Handle member leave events - log to database and send leave messages."""
     logger.info(f"Member left: {member} ({member.id}) from guild {member.guild.name} ({member.guild.id})")
