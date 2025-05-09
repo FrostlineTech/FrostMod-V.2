@@ -69,6 +69,9 @@ FrostMod V2 is a powerful, scalable Discord moderation bot built for Frostline S
 - **/support** — Get a link to the Frostline support server
 - **/help** — Show all available commands
 
+### Fun Commands
+- **/twerkz** — Generates a random twerk message
+
 *All configuration and moderation commands require Administrator permission or the server's mod role (set with /mrole).*
 
 ## Permissions

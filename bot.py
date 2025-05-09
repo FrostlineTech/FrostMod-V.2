@@ -787,45 +787,56 @@ async def on_member_join(member):
     logger.info(f"Member joined: {member} ({member.id}) in guild {member.guild.name} ({member.guild.id})")
     
     try:
-        async with bot.db_pool.acquire() as conn:
-            # Upsert the guild first
-            await conn.execute('''
-                INSERT INTO servers (guild_id, guild_name) VALUES ($1, $2)
-                ON CONFLICT (guild_id) DO UPDATE SET guild_name = EXCLUDED.guild_name
-            ''', member.guild.id, member.guild.name)
-            
-            # Log the join event to database
-            await conn.execute('''
-                INSERT INTO user_joins (guild_id, user_id, username, joined_at) 
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (guild_id, user_id) DO UPDATE SET 
-                    username = EXCLUDED.username,
-                    joined_at = EXCLUDED.joined_at
-            ''', member.guild.id, member.id, str(member), discord.utils.utcnow())
-            
-            # Fetch server configuration
-            row = await conn.fetchrow('''
-                SELECT welcome_channel_id, welcome_message, join_role_id, logs_channel_id 
-                FROM servers WHERE guild_id = $1
-            ''', member.guild.id)
-            
-            if not row:
-                return
+        # First handle the database operations
+        row = None
+        try:
+            async with bot.db_pool.acquire() as conn:
+                # Upsert the guild first
+                await conn.execute('''
+                    INSERT INTO servers (guild_id, guild_name) VALUES ($1, $2)
+                    ON CONFLICT (guild_id) DO UPDATE SET guild_name = EXCLUDED.guild_name
+                ''', member.guild.id, member.guild.name)
                 
-            # Assign join role if set
-            if row['join_role_id']:
-                role = member.guild.get_role(row['join_role_id'])
-                if role:
-                    try:
-                        await member.add_roles(role, reason="Auto join role")
-                        logger.info(f"Assigned role {role.name} to {member} in {member.guild.name}")
-                    except Exception as e:
-                        logger.error(f"Error assigning join role to {member}: {e}")
+                # Use a simpler approach for datetime
+                # Log the join event to database without using datetime objects directly
+                await conn.execute('''
+                    INSERT INTO user_joins (guild_id, user_id, username, joined_at) 
+                    VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+                    ON CONFLICT (guild_id, user_id) DO UPDATE SET 
+                        username = EXCLUDED.username,
+                        joined_at = CURRENT_TIMESTAMP
+                ''', member.guild.id, member.id, str(member))
+                
+                # Fetch server configuration
+                row = await conn.fetchrow('''
+                    SELECT welcome_channel_id, welcome_message, join_role_id, logs_channel_id 
+                    FROM servers WHERE guild_id = $1
+                ''', member.guild.id)
+                
+                # Make sure member.created_at is timezone-aware for later comparisons
+                member_created_at = member.created_at
+                if member_created_at.tzinfo is None:
+                    member_created_at = member_created_at.replace(tzinfo=datetime.timezone.utc)
+        except Exception as e:
+            logger.error(f"Error logging member join to database: {e}")
             
-            # Send welcome message if set
-            if row['welcome_channel_id'] and row['welcome_message']:
-                channel = member.guild.get_channel(row['welcome_channel_id'])
-                if channel:
+        if not row:
+            return
+        
+        # Assign join role if set
+        if row['join_role_id']:
+            role = member.guild.get_role(row['join_role_id'])
+            if role:
+                try:
+                    await member.add_roles(role, reason="Auto join role")
+                    logger.info(f"Assigned role {role.name} to {member} in {member.guild.name}")
+                except Exception as e:
+                    logger.error(f"Error assigning join role to {member}: {e}")
+            
+        # Send welcome message if set
+        if row['welcome_channel_id'] and row['welcome_message']:
+            channel = member.guild.get_channel(row['welcome_channel_id'])
+            if channel:
                     try:
                         # Format welcome message with user mention and member count
                         welcome_msg = row['welcome_message']
@@ -834,11 +845,13 @@ async def on_member_join(member):
                         welcome_msg = welcome_msg.replace('{servername}', member.guild.name)
                         
                         # Create and send welcome embed
+                        # Use the same timestamp throughout the function
+                        now = datetime.datetime.now(datetime.timezone.utc)
                         embed = discord.Embed(
                             title=f"Welcome to {member.guild.name}!",
                             description=welcome_msg,
                             color=discord.Color.blue(),
-                            timestamp=discord.utils.utcnow()
+                            timestamp=now
                         )
                         
                         # Add user avatar and server icon
@@ -855,25 +868,29 @@ async def on_member_join(member):
                     except Exception as e:
                         logger.error(f"Error sending welcome message for {member}: {e}")
             
-            # Log to server's logs channel if set
-            if row['logs_channel_id']:
-                log_channel = member.guild.get_channel(row['logs_channel_id'])
-                if log_channel:
+        # Log to server's logs channel if set
+        if row['logs_channel_id']:
+            log_channel = member.guild.get_channel(row['logs_channel_id'])
+            if log_channel:
                     try:
                         # Create member join log embed
+                        # Use the same timestamp throughout the function
+                        now = datetime.datetime.now(datetime.timezone.utc)
                         embed = discord.Embed(
                             title="Member Joined",
                             description=f"{member.mention} joined the server",
                             color=discord.Color.green(),
-                            timestamp=discord.utils.utcnow()
+                            timestamp=now
                         )
                         
                         # Add user information
                         embed.add_field(name="User ID", value=member.id, inline=True)
-                        embed.add_field(name="Account Created", value=discord.utils.format_dt(member.created_at, style='R'), inline=True)
+                        embed.add_field(name="Account Created", value=discord.utils.format_dt(member_created_at, style='R'), inline=True)
                         
                         # Check if account is new (less than 7 days old)
-                        account_age = (discord.utils.utcnow() - member.created_at).days
+                        # Use the timezone-aware created_at we prepared earlier
+                        now = datetime.datetime.now(datetime.timezone.utc)
+                        account_age = (now - member_created_at).days
                         if account_age < 7:
                             embed.add_field(name="⚠️ New Account", value=f"Account created {account_age} days ago", inline=False)
                         
@@ -924,6 +941,40 @@ async def wmessage(interaction: discord.Interaction, message: str):
         await interaction.response.send_message("Welcome message updated!", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"[ERROR] Failed to update welcome message: {e}", ephemeral=True)
+
+@bot.tree.command(name="leavemessage", description="Set the leave message for this server.")
+@app_commands.describe(message="The leave message to send. Use {user} for the leaving member.")
+async def leavemessage(interaction: discord.Interaction, message: str):
+    """Set the leave message for members who leave the server. Admin only."""
+    if not await is_admin(interaction):
+        await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
+        return
+    try:
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE servers SET leave_message = $1 WHERE guild_id = $2
+            ''', message, interaction.guild.id)
+        print(f"[DB UPDATE] servers: Set leave_message for guild {interaction.guild.name} ({interaction.guild.id})")
+        await interaction.response.send_message("Leave message updated!", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Failed to update leave message: {e}", ephemeral=True)
+
+@bot.tree.command(name="lchannel", description="Set the leave channel for this server.")
+@app_commands.describe(channel="The channel to send leave messages in.")
+async def lchannel(interaction: discord.Interaction, channel: discord.TextChannel):
+    """Set the channel for leave messages. Admin only."""
+    if not await is_admin(interaction):
+        await interaction.response.send_message("You must be an administrator to use this command.", ephemeral=True)
+        return
+    try:
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE servers SET leave_channel_id = $1 WHERE guild_id = $2
+            ''', channel.id, interaction.guild.id)
+        print(f"[DB UPDATE] servers: Set leave_channel_id={channel.id} for guild {interaction.guild.name} ({interaction.guild.id})")
+        await interaction.response.send_message(f"Leave channel set to {channel.mention}.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"[ERROR] Failed to set leave channel: {e}", ephemeral=True)
 
 @bot.tree.command(name="joinrole", description="Set a role to assign to new members on join.")
 @app_commands.describe(role="The role to assign to new members.")
@@ -1019,11 +1070,17 @@ Welcome to **FrostMod**! Here are all the commands you can use.
         "🆘 **/support**\nGet a link to the Frostline support server.\n\n"
         "❄️ **/help**\nShow this help message."
     )
+    
+    # Fun Commands
+    fun_cmds = (
+        "💃 **/twerkz**\nGenerates a random twerk message."
+    )
 
     embed.add_field(name="━━━━━━━━ ⚙️ Server Configuration ━━━━━━━━", value=config_cmds, inline=False)
     embed.add_field(name="━━━━━━━━ 🛡️ Moderation Tools ━━━━━━━━", value=mod_cmds, inline=False)
     embed.add_field(name="━━━━━━━━ 🎂 Birthday System ━━━━━━━━", value=birthday_cmds, inline=False)
     embed.add_field(name="━━━━━━━━ 🔧 Utility Commands ━━━━━━━━", value=util_cmds, inline=False)
+    embed.add_field(name="━━━━━━━━ 🎉 Fun Commands ━━━━━━━━", value=fun_cmds, inline=False)
     
     embed.set_footer(text="FrostMod • Need help? Use /support or join the support server!", icon_url=interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else discord.Embed.Empty)
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -1177,11 +1234,12 @@ async def on_member_remove(member):
         
         try:
             async with bot.db_pool.acquire() as conn:
-                # Log the leave in database
+                # Use a simpler approach for datetime
+                # Log the leave in database using PostgreSQL's CURRENT_TIMESTAMP
                 await conn.execute('''
-                    INSERT INTO user_leaves (guild_id, user_id, username, left_at)
-                    VALUES ($1, $2, $3, $4)
-                ''', member.guild.id, member.id, str(member), discord.utils.utcnow())
+                    INSERT INTO user_leaves (guild_id, guild_name, user_id, username, left_at)
+                    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                ''', member.guild.id, member.guild.name, member.id, str(member))
                 
                 # Get join date if available
                 join_row = await conn.fetchrow('''
@@ -1191,24 +1249,63 @@ async def on_member_remove(member):
                 
                 if join_row and join_row['joined_at']:
                     join_date = join_row['joined_at']
-                    join_duration = discord.utils.utcnow() - join_date
+                    # Ensure both datetimes are timezone-aware
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    join_date_aware = join_date.replace(tzinfo=datetime.timezone.utc) if join_date.tzinfo is None else join_date
+                    join_duration = now - join_date_aware
         except Exception as e:
             logger.error(f"Error logging member leave to database: {e}")
         
-        # Send leave message to logs channel
+        # Get server configuration including logs channel, leave message, and leave channel
         async with bot.db_pool.acquire() as conn:
-            row = await conn.fetchrow('''SELECT logs_channel_id FROM servers WHERE guild_id = $1''', member.guild.id)
+            row = await conn.fetchrow('''
+                SELECT logs_channel_id, leave_message, leave_channel_id, welcome_channel_id 
+                FROM servers WHERE guild_id = $1
+            ''', member.guild.id)
             
+        # Send custom leave message if configured
+        # First try to use dedicated leave channel, fall back to welcome channel if not set
+        leave_channel_id = row['leave_channel_id'] if row and row['leave_channel_id'] else (row['welcome_channel_id'] if row else None)
+        if row and row['leave_message'] and leave_channel_id:
+            leave_channel = member.guild.get_channel(leave_channel_id)
+            if leave_channel:
+                try:
+                    # Format leave message with user mention
+                    leave_msg = row['leave_message']
+                    leave_msg = leave_msg.replace('{user}', str(member))
+                    
+                    # Create and send leave embed
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    embed = discord.Embed(
+                        title=f"Member Left",
+                        description=leave_msg,
+                        color=discord.Color.red(),
+                        timestamp=now
+                    )
+                    
+                    # Add user avatar
+                    embed.set_thumbnail(url=member.display_avatar.url)
+                    embed.set_footer(text=f"Members: {member.guild.member_count}")
+                    
+                    await leave_channel.send(embed=embed)
+                    logger.info(f"Sent leave message for {member} in {member.guild.name}")
+                except Exception as e:
+                    logger.error(f"Error sending custom leave message for {member}: {e}")
+        
+        # Send detailed leave log to logs channel
         if row and row['logs_channel_id']:
             log_channel = member.guild.get_channel(row['logs_channel_id'])
             if log_channel:
                 try:
                     # Create member leave log embed
+                    # Use a consistent timezone-aware datetime
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    
                     embed = discord.Embed(
                         title="Member Left",
                         description=f"{member.mention} has left the server",
                         color=discord.Color.red(),
-                        timestamp=discord.utils.utcnow()
+                        timestamp=now
                     )
                     
                     # Add user information
@@ -1216,7 +1313,9 @@ async def on_member_remove(member):
                     
                     # Add join date and duration if available
                     if join_date:
-                        embed.add_field(name="Joined", value=discord.utils.format_dt(join_date, style='R'), inline=True)
+                        # Ensure join_date is timezone-aware for format_dt
+                        join_date_aware = join_date.replace(tzinfo=datetime.timezone.utc) if join_date.tzinfo is None else join_date
+                        embed.add_field(name="Joined", value=discord.utils.format_dt(join_date_aware, style='R'), inline=True)
                         
                     if join_duration:
                         days = join_duration.days
@@ -1515,6 +1614,32 @@ async def on_message(message):
             await bot.process_commands(message)
     except Exception as e:
         logger.error(f"Error in on_message event: {e}")
+
+# --- Fun Commands ---
+
+@bot.tree.command(name="twerkz", description="Generates a random twerk message")
+async def twerkz(interaction: discord.Interaction):
+    """Generate a random message from a predefined list of twerk messages."""
+    # List of messages to randomly select from
+    messages = [
+        "die slow rest in piss",
+        "Tristans gay dude",
+        "Twerking in the moonlight",
+        "Shake what your mama gave you",
+        "Is it hot in here or is it just me twerking?",
+        "Drop it like it's hot",
+        "Twerk team captain reporting for duty",
+        "Professional twerker at your service",
+        "Twerk till ya can't twerk no more",
+        "*intense twerking intensifies*"
+    ]
+    
+    # Randomly select a message
+    import random
+    message = random.choice(messages)
+    
+    # Send the message
+    await interaction.response.send_message(message)
 
 if __name__ == "__main__":
     bot.run(TOKEN)
