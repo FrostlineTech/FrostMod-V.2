@@ -572,6 +572,28 @@ async def create_ticket_embed(channel):
     # Send the embed with the button
     await channel.send(embed=embed, view=TicketButton())
 
+async def get_channel_transcript(channel):
+    """Get all messages from a channel and format them as a transcript."""
+    messages = []
+    async for message in channel.history(limit=None, oldest_first=True):
+        timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        author = f"{message.author} ({message.author.id})"
+        content = message.content or "[No content]"
+        
+        # Handle embeds
+        if message.embeds:
+            for embed in message.embeds:
+                content += f"\n[Embed: {embed.title or 'No Title'}]"
+        
+        # Handle attachments
+        if message.attachments:
+            for attachment in message.attachments:
+                content += f"\n[Attachment: {attachment.filename} - {attachment.url}]"
+                
+        messages.append(f"[{timestamp}] {author}: {content}")
+    
+    return "\n".join(messages)
+
 async def create_new_ticket(interaction):
     """Create a new support ticket."""
     guild = interaction.guild
@@ -643,16 +665,29 @@ async def create_new_ticket(interaction):
                         await close_interaction.response.send_message("You don't have permission to close this ticket.", ephemeral=True)
                         return
                     
-                    await close_interaction.response.send_message("Closing ticket...", ephemeral=True)
+                    await close_interaction.response.send_message("Closing ticket and saving transcript...", ephemeral=True)
                     
-                    # Update the ticket status in the database
+                    # Get the transcript before closing
+                    transcript = await get_channel_transcript(ticket_channel)
+                    
+                    # Update the ticket status in the database and save transcript
                     async with bot.db_pool.acquire() as close_conn:
+                        # Update ticket status
                         await close_conn.execute('''
                             UPDATE tickets 
                             SET status = 'closed', closed_at = CURRENT_TIMESTAMP, 
                                 closed_by_id = $1, closed_by_username = $2
                             WHERE channel_id = $3
                         ''', close_interaction.user.id, str(close_interaction.user), ticket_channel.id)
+                        
+                        # Save the transcript
+                        await close_conn.execute('''
+                            INSERT INTO ticket_transcripts 
+                            (guild_id, guild_name, channel_id, created_by_id, created_by_username, 
+                            closed_by_id, closed_by_username, transcript_content, closed_at)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
+                        ''', guild.id, guild.name, ticket_channel.id, 
+                        user.id, str(user), close_interaction.user.id, str(close_interaction.user), transcript)
                     
                     # Send a closing message
                     closing_embed = discord.Embed(
@@ -661,7 +696,7 @@ async def create_new_ticket(interaction):
                         color=discord.Color.from_rgb(220, 20, 60),  # Crimson red for closed tickets
                         timestamp=discord.utils.utcnow()
                     )
-                    closing_embed.add_field(name="Ticket Information", value=f"This channel will be deleted in 10 seconds.")
+                    closing_embed.add_field(name="Ticket Information", value=f"This channel will be deleted in 10 seconds. A transcript has been saved.")
                     closing_embed.set_footer(text="Frostline Support System | Thank you for using our services")
                     await ticket_channel.send(embed=closing_embed)
                     
@@ -1965,6 +2000,57 @@ async def joke(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed)
 
+@bot.tree.command(name="utilities", description="View Frostline's company utilities, plugins, and social media links")
+async def utilities(interaction: discord.Interaction):
+    """Display Frostline's company utilities, plugins, and social media links."""
+    # Create the main embed with Frostline branding
+    main_embed = discord.Embed(
+        title="❄️ Frostline Utilities",
+        description="Explore Frostline's ecosystem of plugins, social media, and resources.",
+        color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
+    )
+    
+    # Add Minecraft Plugins section
+    main_embed.add_field(
+        name="🧩 Minecraft Plugins",
+        value=(
+            "**Classes - GuildWar Addon**\n"
+            "[SpigotMC Link](https://www.spigotmc.org/resources/classes-guildwars-addon.125026/)\n\n"
+            "**GuildWars - Factions Plugin**\n"
+            "[SpigotMC Link](https://www.spigotmc.org/resources/guildwars-factions-plugin.124999/)\n\n"
+            "**FrostGui**\n"
+            "[SpigotMC Link](https://www.spigotmc.org/resources/frostgui.124878/)"
+        ),
+        inline=False
+    )
+    
+    # Add Social Media section
+    main_embed.add_field(
+        name="📱 Social Media",
+        value=(
+            "**Instagram**\n"
+            "[Follow Us](https://www.instagram.com/frostlinesolutions_llc/)\n\n"
+            "**Facebook**\n"
+            "[Like Our Page](https://www.facebook.com/FROSTLINELLC/)\n\n"
+            "**YouTube**\n"
+            "[Subscribe](https://www.youtube.com/@FrostLinesolutionsLLC)"
+        ),
+        inline=False
+    )
+    
+    # Add GitHub section
+    main_embed.add_field(
+        name="💻 GitHub Innovation Lab",
+        value="[Browse Our Repositories](https://github.com/FrostlineTech?tab=repositories)",
+        inline=False
+    )
+    
+    # Set footer with company branding
+    main_embed.set_footer(text="Frostline Entertainment | Powered by Frostline Solutions LLC")
+    
+    # Send the embed
+    await interaction.response.send_message(embed=main_embed)
+
 @bot.tree.command(name="frosthelp", description="Post a permanent help embed in a specified channel.")
 @app_commands.describe(channel="The channel to post the help embed in.")
 async def frosthelp(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -1975,16 +2061,36 @@ async def frosthelp(interaction: discord.Interaction, channel: discord.TextChann
         return
     
     try:
-        # Create comprehensive help embed with prettier design
-        embed = discord.Embed(
+        # Create multiple embeds to stay within Discord's 4096 character limit per embed
+        # Main welcome embed
+        main_embed = discord.Embed(
             title="❄️ FrostMod Command Center",
             description="""
 :wave: **Welcome to the FrostMod Command Center!**
 This guide provides comprehensive information on all available commands.
 Find the perfect tool for your needs, organized by category below.
 
-:shield: **━━━━ MODERATION TOOLS ━━━━**
+Use the navigation below to view commands by category:
+- 🛡️ **Moderation Tools**
+- ⚙️ **Server Configuration**
+- 🔢 **Counting Game**
+- 🎂 **Birthday System**
+- 🔧 **Utility Features**
+- 🎲 **Fun Commands**
+- ❄️ **Frostline Utilities**
 
+:bulb: **Need additional help?** Contact a server administrator or moderator.
+""",
+            color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
+        )
+        
+        # Add a thumbnail to make the embed more visually appealing
+        main_embed.set_thumbnail(url="https://i.imgur.com/tLXG6Rx.png")  # FrostMod logo placeholder - replace with actual logo URL
+        
+        # Moderation embed
+        mod_embed = discord.Embed(
+            title="🛡️ Moderation Commands",
+            description="""
 **`/warn`** `<user> <reason>`
 > :warning: Issue an official warning to a user that gets logged in the database.
 > Warns are tracked and can be viewed by moderators at any time.
@@ -2012,16 +2118,29 @@ Find the perfect tool for your needs, organized by category below.
 **`/mrole`** `<role>`
 > :key: Designate which role has moderation permissions for bot commands.
 > Users with this role can use admin-level commands.
-
-:gear: **━━━━ SERVER CONFIGURATION ━━━━**
-
-**`/welcomechannel`** `<channel>`
+""",
+            color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
+        )
+        
+        # Server configuration embed
+        config_embed = discord.Embed(
+            title="⚙️ Server Configuration Commands",
+            description="""
+**`/welcome`** `<channel>`
 > :door: Set where new member welcome messages will be displayed.
 > Creates a personalized greeting when members join.
 
-**`/leavechannel`** `<channel>`
+**`/wmessage`** `<text>`
+> :envelope: Customize the welcome message sent when members join.
+> Supports variables like {user} and {server}.
+
+**`/lchannel`** `<channel>`
 > :wave: Configure which channel shows departure messages.
 > Notifies when members leave the server.
+
+**`/leavemessage`** `<text>`
+> :envelope_with_arrow: Customize the message sent when members leave.
+> Supports variables like {user} and {server}.
 
 **`/logschannel`** `<channel>`
 > :pencil: Designate where server activity logs will be sent.
@@ -2034,6 +2153,23 @@ Find the perfect tool for your needs, organized by category below.
 **`/ticketchannel`** `<channel>`
 > :ticket: Configure where users can create support tickets.
 > Creates an interactive interface for users to get help.
+""",
+            color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
+        )
+        
+        # Counting and Birthday embed
+        counting_bday_embed = discord.Embed(
+            title="🔢 Counting Game & 🎂 Birthday System",
+            description="""
+:1234: **━━━━ COUNTING GAME ━━━━**
+
+**`/countingchannel`** `<channel>`
+> :1234: Set the channel for the counting game.
+> Members take turns counting up from 1 to the max count.
+
+**`/maxcount`** `<number>`
+> :chart_with_upwards_trend: Set the maximum target number for the counting game.
+> When reached, the game resets and starts again.
 
 :birthday: **━━━━ BIRTHDAY SYSTEM ━━━━**
 
@@ -2049,56 +2185,70 @@ Find the perfect tool for your needs, organized by category below.
 > :x: Remove a birthday from the system.
 > Users can delete their own; admins can delete any.
 
-:wrench: **━━━━ UTILITY FEATURES ━━━━**
-
-**`/status`**
-> :signal_strength: Check the bot's operational status and response time.
-> Shows ping, uptime, and system performance metrics.
-
-**`/help`**
-> :question: Get a quick reference of commands sent privately to you.
-> Provides a condensed list for quick reference.
-
-**`/userinfo`** `<user>`
-> :bust_in_silhouette: View detailed information about a server member.
-> Shows join date, roles, status, and more.
-
-**`/serverinfo`**
-> :bar_chart: Display comprehensive statistics about the server.
-> Includes member count, channel info, and creation date.
-
-**`/avatar`** `<user>`
-> :frame_photo: Display a user's profile picture in full resolution.
-> Perfect for seeing avatars in detail.
-
-:game_die: **━━━━ FUN COMMANDS ━━━━**
-
-**`/roll`** `<dice> <sides>`
-> :game_die: Roll virtual dice with customizable parameters.
-> Roll between 1-10 dice with 2-100 sides each.
-
-**`/joke`**
-> :laughing: Receive a random joke from the bot's collection.
-> Great for lightening the mood!
-
-**`/8ball`** `<question>`
-> :8ball: Ask a question and receive a mystical answer.
-> The magic 8-ball knows all (or pretends to)!
-
-:bulb: **Need additional help?** Contact a server administrator or moderator.
+**`/testbirthdays`**
+> :test_tube: Test the birthday announcement system for today's birthdays.
+> Admin only command for verifying birthday configurations.
 """,
             color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
         )
         
-        # Add a thumbnail to make the embed more visually appealing
-        embed.set_thumbnail(url="https://i.imgur.com/tLXG6Rx.png")  # FrostMod logo placeholder - replace with actual logo URL
+        # Utility and Fun Commands embed
+        utility_fun_embed = discord.Embed(
+            title="🔧 Utility Features & 🎲 Fun Commands",
+            description="""
+:wrench: **━━━━ UTILITY FEATURES ━━━━**
+
+**`/userinfo`** `<user>`
+> :bust_in_silhouette: View detailed information about a server member.
+> Shows join date, roles, permissions, and more.
+
+**`/ping`**
+> :signal_strength: Check the bot's response time and latency.
+> Useful for verifying if the bot is responsive.
+
+**`/uptime`**
+> :clock3: See how long the bot has been running since last restart.
+> Displays in days, hours, minutes, and seconds.
+
+**`/utilities`**
+> ❄️ View Frostline's company utilities, plugins, and social media links.
+> Access all Frostline resources in one convenient place.
+
+:game_die: **━━━━ FUN COMMANDS ━━━━**
+
+**`/joke`**
+> :laughing: Get a random joke to lighten the mood.
+> Family-friendly humor for everyone to enjoy.
+
+**`/8ball`** `<question>`
+> :8ball: Ask the magic 8-ball a yes/no question.
+> Provides a random mystical answer to your query.
+
+**`/coinflip`**
+> :coin: Flip a virtual coin that lands on heads or tails.
+> Perfect for making quick decisions.
+""",
+            color=discord.Color.from_rgb(0, 191, 255)  # Frostline branding blue
+        )
         
-        # Updated footer with new branding
-        embed.set_footer(text="FrostMod v2.0 | Powered by Frostline Solutions LLC")
-        embed.timestamp = datetime.datetime.now()
+        # Add footer to all embeds
+        footer_text = "FrostMod v2.0 | Powered by Frostline Solutions LLC"
+        timestamp = datetime.datetime.now()
         
-        # Send the help embed to the specified channel
-        help_message = await channel.send(embed=embed)
+        for embed in [main_embed, mod_embed, config_embed, counting_bday_embed, utility_embed, fun_embed]:
+            embed.set_footer(text=footer_text)
+            embed.timestamp = timestamp
+        
+        # Respond to the interaction first
+        await interaction.response.defer(ephemeral=True)
+        
+        # Send each embed as a separate message
+        main_message = await channel.send(embed=main_embed)
+        await channel.send(embed=mod_embed)
+        await channel.send(embed=config_embed)
+        await channel.send(embed=counting_bday_embed)
+        await channel.send(embed=utility_embed)
+        help_message = await channel.send(embed=fun_embed)
         
         # Update the database to store the help channel ID
         async with bot.db_pool.acquire() as conn:
@@ -2119,13 +2269,18 @@ Find the perfect tool for your needs, organized by category below.
                     UPDATE servers SET help_channel_id = $1, guild_name = $2 WHERE guild_id = $3
                 ''', channel.id, interaction.guild.name, interaction.guild.id)
         
-        await interaction.response.send_message(f"Help center has been successfully set up in {channel.mention}. The help embed will be permanently displayed there.", ephemeral=True)
+        # Use followup instead of response.send_message since we've already responded
+        await interaction.followup.send(f"Help center has been successfully set up in {channel.mention}. All command information is now available there.", ephemeral=True)
         
         logger.info(f"Help channel set to {channel.id} for guild {interaction.guild.name} ({interaction.guild.id})")
         
     except Exception as e:
         logger.error(f"Error setting up help center: {e}")
-        await interaction.response.send_message(f"Error setting up help center: {e}", ephemeral=True)
+        # Check if the interaction has already been responded to
+        if interaction.response.is_done():
+            await interaction.followup.send(f"Error setting up help center: {e}", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"Error setting up help center: {e}", ephemeral=True)
 
 # Function to check if user has moderator role
 async def is_moderator(interaction):
