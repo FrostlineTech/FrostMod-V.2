@@ -2240,7 +2240,7 @@ Use the navigation below to view commands by category:
         footer_text = "FrostMod v2.0 | Powered by Frostline Solutions LLC"
         timestamp = datetime.datetime.now()
         
-        for embed in [main_embed, mod_embed, config_embed, counting_bday_embed, utility_embed, fun_embed]:
+        for embed in [main_embed, mod_embed, config_embed, counting_bday_embed, utility_fun_embed]:
             embed.set_footer(text=footer_text)
             embed.timestamp = timestamp
         
@@ -2252,8 +2252,7 @@ Use the navigation below to view commands by category:
         await channel.send(embed=mod_embed)
         await channel.send(embed=config_embed)
         await channel.send(embed=counting_bday_embed)
-        await channel.send(embed=utility_embed)
-        help_message = await channel.send(embed=fun_embed)
+        help_message = await channel.send(embed=utility_fun_embed)
         
         # Update the database to store the help channel ID
         async with bot.db_pool.acquire() as conn:
