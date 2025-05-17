@@ -2908,6 +2908,92 @@ async def maxcount(interaction: discord.Interaction, maximum: int):
     except Exception as e:
         logger.error(f"Error setting count maximum: {e}")
         await interaction.response.send_message(f"Error setting count maximum: {str(e)}", ephemeral=True)
-2
+
+@bot.tree.command(name="updatecount", description="Update the counting game with messages sent while bot was offline")
+@app_commands.describe(count="The current count to update to")
+@app_commands.guild_only()
+async def updatecount(interaction: discord.Interaction, count: int):
+    """Update the counting game with the current count when messages were sent while bot was offline. Admin only."""
+    # Check if user has admin permissions
+    if not await is_admin(interaction):
+        await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
+        return
+        
+    try:
+        # Check if counting is set up for this guild
+        counting_channel = await db_fetch(
+            '''SELECT counting_channel FROM servers WHERE guild_id = $1''',
+            interaction.guild.id
+        )
+        
+        if not counting_channel or not counting_channel[0]['counting_channel']:
+            await interaction.response.send_message(
+                "Please set up a counting channel first using /countingchannel.", 
+                ephemeral=True
+            )
+            return
+            
+        # Validate the count
+        if count < 0:
+            await interaction.response.send_message("The count must be a non-negative number.", ephemeral=True)
+            return
+            
+        # Get current game data
+        game_data = await db_fetch(
+            '''SELECT current_count, max_count FROM counting_game WHERE guild_id = $1''',
+            interaction.guild.id
+        )
+        
+        if not game_data:
+            logger.info(f"Creating new counting game with current_count={count} for guild {interaction.guild.id} ({interaction.guild.name})")
+            await db_execute(
+                '''INSERT INTO counting_game(guild_id, current_count, max_count) 
+                   VALUES($1, $2, 100)''',
+                interaction.guild.id, count
+            )
+            max_count = 100
+            logger.info(f"New counting game created with current_count={count} in database")
+        else:
+            logger.info(f"Updating current_count to {count} for guild {interaction.guild.id} ({interaction.guild.name})")
+            await db_execute(
+                '''UPDATE counting_game SET current_count = $2, last_user_id = NULL WHERE guild_id = $1''',
+                interaction.guild.id, count
+            )
+            max_count = game_data[0]['max_count']
+            logger.info(f"Updated current_count to {count} in database")
+        
+        # Create confirmation embed
+        embed = discord.Embed(
+            title="🔢 Counting Game Updated",
+            description=f"The current count has been updated to **{count}**.",
+            color=discord.Color.from_rgb(0, 191, 255)  # Frostline blue
+        )
+        embed.add_field(name="Next Number", value=str(count + 1), inline=True)
+        embed.add_field(name="Goal", value=str(max_count), inline=True)
+        embed.set_footer(text="The counting game has been updated to reflect messages sent while the bot was offline.")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+        
+        # Update the counting channel with the new count
+        channel_id = counting_channel[0]['counting_channel']
+        channel = bot.get_channel(channel_id)
+        
+        if channel:
+            update_embed = discord.Embed(
+                title="🔢 Counting Game Updated",
+                description=f"The count has been updated to **{count}** to reflect messages sent while the bot was offline.",
+                color=discord.Color.from_rgb(0, 191, 255)  # Frostline blue
+            )
+            update_embed.add_field(name="Current Count", value=str(count), inline=True)
+            update_embed.add_field(name="Next Number", value=str(count + 1), inline=True)
+            update_embed.add_field(name="Goal", value=str(max_count), inline=True)
+            update_embed.set_footer(text="Continue counting from the updated number")
+            
+            await channel.send(embed=update_embed)
+        
+    except Exception as e:
+        logger.error(f"Error updating count: {e}")
+        await interaction.response.send_message(f"Error updating count: {str(e)}", ephemeral=True)
+
 if __name__ == "__main__":
     bot.run(TOKEN)
