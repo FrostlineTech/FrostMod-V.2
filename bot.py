@@ -205,12 +205,16 @@ def check_message_for_filter(message_content, filter_level):
     
     Args:
         message_content (str): The message content to check
-        filter_level (str): The filter level ('strict', 'moderate', or 'light')
+        filter_level (str): The filter level ('none', 'strict', 'moderate', or 'light')
         
     Returns:
         tuple: (bool, str) - Whether the message is blocked and the offending word if any
     """
     if not message_content or not filter_level:
+        return False, None
+        
+    # If filter level is set to none, don't filter any messages
+    if filter_level == 'none':
         return False, None
         
     lowered = message_content.lower()
@@ -237,7 +241,7 @@ async def get_filter_level(guild_id):
         guild_id (int): The guild ID
         
     Returns:
-        str: The filter level ('strict', 'moderate', or 'light')
+        str: The filter level ('none', 'strict', 'moderate', or 'light')
     """
     try:
         async with bot.db_pool.acquire() as conn:
@@ -339,8 +343,9 @@ async def db_fetch(query, *args):
 from discord import app_commands
 
 @bot.tree.command(name="filter", description="Set the chat filter level for this server (admin only)")
-@app_commands.describe(level="Filter level: light, moderate, or strict")
+@app_commands.describe(level="Filter level: none, light, moderate, or strict")
 @app_commands.choices(level=[
+    app_commands.Choice(name="None (no filtering)", value="none"),
     app_commands.Choice(name="Light (only blocks egregious text)", value="light"),
     app_commands.Choice(name="Moderate (no slurs)", value="moderate"),
     app_commands.Choice(name="Strict (fully family friendly)", value="strict")
@@ -1158,7 +1163,7 @@ Welcome to **FrostMod**! Here are all the commands you can use.
     # Server Configuration Commands
     config_cmds = (
         "⚙️ **/mrole** `<role>`\nSet the moderator role for admin commands.\n\n"
-        "🔍 **/filter** `<level>`\nSet chat filter level (light, moderate, strict).\n\n"
+        "🔍 **/filter** `<level>`\nSet chat filter level (none, light, moderate, strict).\n\n"
         "👋 **/welcome** `<channel>`\nSet the welcome channel for new members.\n\n"
         "💬 **/wmessage** `<message>`\nSet the welcome message. Use `{user}`, `{membercount}`, `{servername}`.\n\n"
         "🎭 **/joinrole** `<role>`\nSet the role automatically assigned to new members.\n\n"
@@ -1799,12 +1804,12 @@ async def on_message(message):
             # Log the filtered message to the logs channel if set
             try:
                 logs_channel_id = await db_fetch(
-                    '''SELECT logs_channel FROM servers WHERE guild_id = $1''',
+                    '''SELECT logs_channel_id FROM servers WHERE guild_id = $1''',
                     message.guild.id
                 )
                 
-                if logs_channel_id and logs_channel_id[0]['logs_channel']:
-                    logs_channel = bot.get_channel(logs_channel_id[0]['logs_channel'])
+                if logs_channel_id and logs_channel_id[0]['logs_channel_id']:
+                    logs_channel = bot.get_channel(logs_channel_id[0]['logs_channel_id'])
                     if logs_channel:
                         embed = discord.Embed(
                             title="Message Filtered",
@@ -2111,7 +2116,7 @@ Use the navigation below to view commands by category:
 > :broom: Delete messages from a specific user within the channel.
 > Great for targeted cleanup of problematic content.
 
-**`/filter`** `<level>`
+**`/filter`** `<level>` - Set filter level (none, light, moderate, strict)
 > :no_entry: Set the server's word filter strength level.
 > Options: strict (most words filtered), moderate, or light (minimal filtering).
 
@@ -2904,6 +2909,6 @@ async def maxcount(interaction: discord.Interaction, maximum: int):
     except Exception as e:
         logger.error(f"Error setting count maximum: {e}")
         await interaction.response.send_message(f"Error setting count maximum: {str(e)}", ephemeral=True)
-
+2
 if __name__ == "__main__":
     bot.run(TOKEN)
